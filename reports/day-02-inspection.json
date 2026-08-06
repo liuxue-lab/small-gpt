@@ -1,0 +1,44 @@
+{
+  "dataset": {
+    "name": "HuggingFaceFW/fineweb-edu",
+    "configuration": "sample-10BT",
+    "split": "train",
+    "revision": "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  },
+  "sample": {
+    "requested_records": 1000,
+    "records_seen": 1000,
+    "empty_texts": 0,
+    "exact_duplicate_texts": 0,
+    "duplicate_ids": 0
+  },
+  "missing_fields": {
+    "date": 1000
+  },
+  "language_counts": {
+    "en": 1000
+  },
+  "educational_score_counts": {
+    "3": 856,
+    "4": 142,
+    "5": 2
+  },
+  "character_lengths": {
+    "minimum": 307,
+    "maximum": 124276,
+    "mean": 4893.27,
+    "median": 2811.5
+  },
+  "provided_token_counts": {
+    "minimum": 80,
+    "maximum": 26697,
+    "mean": 1057.56,
+    "median": 615.5
+  },
+  "language_scores": {
+    "minimum": 0.6657940149307251,
+    "maximum": 0.994642972946167,
+    "mean": 0.94,
+    "median": 0.945322185754776
+  }
+}

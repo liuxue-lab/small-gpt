@@ -3,3 +3,4 @@ PyYAML
 pytest
 tqdm
 tensorboard
+datasets==5.0.1

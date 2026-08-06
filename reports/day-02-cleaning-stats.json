@@ -1,0 +1,32 @@
+{
+  "input": {
+    "path": "data\\raw\\fineweb_edu_sample.jsonl",
+    "sha256": "00eb5815731870aaea4604d8ab7af0b972203913b636fd456ae4728162c582e9"
+  },
+  "output_directory": "data\\processed",
+  "configuration": {
+    "min_characters": 200,
+    "min_language_score": 0.65,
+    "min_quality_score": 3,
+    "seed": 42,
+    "train_ratio": 0.98,
+    "validation_ratio": 0.01,
+    "test_ratio": 0.01
+  },
+  "statistics": {
+    "input_records": 1000,
+    "kept_records": 1000,
+    "removed_missing_or_empty_text": 0,
+    "removed_short_text": 0,
+    "removed_non_english": 0,
+    "removed_low_or_missing_language_score": 0,
+    "removed_low_or_missing_quality_score": 0,
+    "removed_exact_duplicate": 0,
+    "split_train": 985,
+    "split_validation": 7,
+    "split_test": 8,
+    "kept_characters": 4893141,
+    "kept_provided_tokens": 1057560
+  },
+  "retention_rate": 1.0
+}
