@@ -1,0 +1,48 @@
+project:
+  name: small-gpt-baseline
+  seed: 1337
+
+data:
+  dataset: null
+  language: en
+  train_ratio: 0.98
+  validation_ratio: 0.01
+  test_ratio: 0.01
+
+tokenizer:
+  type: bpe
+  vocab_size: 16384
+  special_tokens:
+    - "<bos>"
+    - "<eos>"
+    - "<pad>"
+    - "<unk>"
+
+model:
+  n_layer: 8
+  n_head: 8
+  n_embd: 512
+  ffn_hidden: 2048
+  context_length: 512
+  vocab_size: 16384
+  dropout: 0.0
+  tie_embeddings: true
+  normalization: layernorm
+  activation: gelu
+  position_encoding: learned
+
+training:
+  device: cuda
+  precision: bf16
+  target_tokens: 300000000
+  micro_batch_size: null
+  gradient_accumulation_steps: null
+  learning_rate: 0.0003
+  min_learning_rate: 0.00003
+  weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  warmup_ratio: 0.02
+  gradient_clip: 1.0
+  eval_interval: 500
+  save_interval: 1000

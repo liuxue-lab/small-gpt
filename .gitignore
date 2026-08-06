@@ -1,0 +1,35 @@
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environment
+.venv/
+
+# VSCode local settings
+.vscode/
+
+# Secrets
+.env
+*.key
+
+# Raw and processed datasets
+data/raw/
+data/processed/
+data/*.bin
+data/*.idx
+
+# Training outputs
+checkpoints/
+runs/
+logs/
+
+# Model weights
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Temporary files
+*.tmp
+*.log
