@@ -16,6 +16,7 @@ __pycache__/
 # Raw and processed datasets
 data/raw/
 data/processed/
+data/tokenized/
 data/*.bin
 data/*.idx
 
