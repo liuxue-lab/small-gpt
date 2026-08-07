@@ -1,0 +1,40 @@
+dataset:
+  name: HuggingFaceFW/fineweb-edu
+  configuration: sample-10BT
+  split: train
+  revision: "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  streaming: true
+
+cleaning:
+  min_characters: 200
+  min_language_score: 0.65
+  min_quality_score: 3
+
+splits:
+  seed: 42
+  train_ratio: 0.98
+  validation_ratio: 0.01
+  test_ratio: 0.01
+
+output:
+  directory: data/processed/fineweb_edu_corpus
+  format: jsonl
+  encoding: utf-8
+  save_raw_records: false
+  manifest_filename: manifest.json
+  state_filename: state.json
+
+profiles:
+  pilot:
+    target_provided_tokens: 2000000
+    shard_target_provided_tokens: 500000
+    estimated_shards: 4
+
+  full:
+    target_provided_tokens: 350000000
+    shard_target_provided_tokens: 5000000
+    estimated_shards: 70
+
+storage:
+  estimated_bytes_per_provided_token: 4.99
+  reserved_disk_gb: 5
