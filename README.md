@@ -193,6 +193,7 @@ small-gpt/
 ├── eval/                          # 验证损失与文本生成
 ├── model/                         # Attention、Transformer Block 和 GPT
 ├── reports/
+│   ├── daily-log.md
 │   ├── day-02-data-audit.md
 │   ├── day-02-inspection.json
 │   ├── day-02-cleaning-stats.json
@@ -233,7 +234,10 @@ small-gpt/
 
 ## 文档
 
+- [开发日志](reports/daily-log.md)
 - [Day 2 数据审计](reports/day-02-data-audit.md)
+- [Day 2 数据检查统计](reports/day-02-inspection.json)
+- [Day 2 数据清洗统计](reports/day-02-cleaning-stats.json)
 - [Day 3 数据管线设计](reports/day-03-data-pipeline-design.md)
 - [Day 3 执行报告](reports/day-03-execution-report.md)
 
