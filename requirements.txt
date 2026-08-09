@@ -4,3 +4,4 @@ pytest
 tqdm
 tensorboard
 datasets==5.0.1
+tokenizers==0.23.1

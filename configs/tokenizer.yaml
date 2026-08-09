@@ -1,0 +1,75 @@
+schema_version: 1
+
+library:
+  name: tokenizers
+  version: "0.23.1"
+
+model:
+  type: byte_level_bpe
+  vocab_size: 16384
+  min_frequency: 2
+  max_token_length: 64
+  dropout: null
+  unk_token: "<unk>"
+  byte_fallback: false
+
+normalizer:
+  type: nfc
+
+pre_tokenizer:
+  type: byte_level
+  add_prefix_space: false
+  use_regex: true
+  initial_alphabet: byte_level
+
+decoder:
+  type: byte_level
+
+special_tokens:
+  - name: bos
+    token: "<bos>"
+    id: 0
+  - name: eos
+    token: "<eos>"
+    id: 1
+  - name: pad
+    token: "<pad>"
+    id: 2
+  - name: unk
+    token: "<unk>"
+    id: 3
+
+source:
+  dataset: HuggingFaceFW/fineweb-edu
+  configuration: sample-10BT
+  split: train
+  revision: 87f09149ef4734204d70ed1d046ddc9ca3f2b8f9
+  corpus_dir: data/processed/fineweb_edu_corpus
+  manifest: data/processed/fineweb_edu_corpus/manifest.json
+  train_file_pattern: shards/shard-*/train.jsonl
+  expected_shards: 4
+  expected_records: 1824
+  expected_provided_tokens: 1967041
+  deterministic_order: shard_then_line
+
+training:
+  show_progress: true
+  overwrite_existing: false
+
+artifacts:
+  output_dir: tokenizer/artifacts
+  tokenizer_file: tokenizer.json
+  config_file: tokenizer_config.json
+  vocab_file: vocab.json
+  merges_file: merges.txt
+
+evaluation:
+  append_eos_per_document: true
+  add_bos: false
+  stats_file: reports/day-04-tokenizer-stats.json
+
+validation:
+  model_config_paths:
+    - configs/debug.yaml
+    - configs/baseline.yaml
+  require_zero_unknown_tokens: true
