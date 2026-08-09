@@ -33,7 +33,7 @@
 ### 本地开发环境
 
 | 项目 | 当前结果 |
-|---|---|
+| --- | --- |
 | 操作系统 | Windows 10 |
 | Python | 3.11.9 |
 | PyTorch | 2.11.0+cu128 |
@@ -70,7 +70,6 @@
 
 ```powershell
 python scripts/check_env.py
-
 ```
 
 配置检查结果：
@@ -126,7 +125,7 @@ python scripts/check_env.py
 ### AutoDL 环境结果
 
 | 项目 | 结果 |
-|---|---|
+| --- | --- |
 | 操作系统 | Ubuntu 22.04 / Linux 5.15 |
 | Python | 3.12.3 |
 | PyTorch | 2.12.1+cu130 |
@@ -147,7 +146,7 @@ python scripts/check_env.py
 ### 数据源决定
 
 | 项目 | 结果 |
-|---|---|
+| --- | --- |
 | 数据集 | `HuggingFaceFW/fineweb-edu` |
 | 配置 | `sample-10BT` |
 | 数据语言 | 英文 |
@@ -167,7 +166,7 @@ python scripts/check_env.py
 ### 1,000 条真实样本审计结果
 
 | 指标 | 结果 |
-|---|---:|
+| --- | ---: |
 | 读取记录 | 1,000 |
 | 空文本 | 0 |
 | 精确重复文本 | 0 |
@@ -185,7 +184,7 @@ python scripts/check_env.py
 教育质量分数分布：
 
 | 分数 | 文档数 |
-|---:|---:|
+| ---: | ---: |
 | 3 | 856 |
 | 4 | 142 |
 | 5 | 2 |
@@ -216,7 +215,7 @@ python scripts/check_env.py
 ### 1,000 条样本清洗结果
 
 | 指标 | 结果 |
-|---|---:|
+| --- | ---: |
 | 输入文档 | 1,000 |
 | 保留文档 | 1,000 |
 | 删除空文本 | 0 |
@@ -292,3 +291,176 @@ python scripts/check_env.py
 - 支持分片输出，避免生成单个超大文件；
 - 统计正式语料清洗前后的数量与大小；
 - 为后续 BPE Tokenizer 训练生成稳定的 train、validation 和 test 文本。
+
+## Day 4：16K ByteLevel BPE Tokenizer
+
+日期：2026-08-09
+
+### 今日目标
+
+- 冻结项目 Tokenizer 的技术契约和特殊 token ID；
+- 只使用 2M Pilot 的 train split 训练 ByteLevel BPE；
+- 实现可复用的训练、加载、编码和统计接口；
+- 保存并重新加载 Tokenizer 产物；
+- 统计 train、validation、test 的真实模型 token 数；
+- 完成专项测试、完整回归、报告和 Git 交付。
+
+### 已完成任务
+
+- [x] 固定 `tokenizers==0.23.1`
+- [x] 新增 `configs/tokenizer.yaml`
+- [x] 确认 Day 3 文本规范化使用 Unicode NFC
+- [x] 固定 16,384 词表与 ByteLevel BPE 配置
+- [x] 固定 `<bos>=0`、`<eos>=1`、`<pad>=2`、`<unk>=3`
+- [x] 实现 Tokenizer 核心模块
+- [x] 实现训练与评估命令行脚本
+- [x] 为 Tokenizer 增加 37 项离线测试
+- [x] 只使用 4 个 Pilot train shard 完成真实训练
+- [x] 保存 `tokenizer.json`、`tokenizer_config.json`、`vocab.json` 和 `merges.txt`
+- [x] 完成保存后重新加载验证
+- [x] 流式统计三个 Pilot split
+- [x] 验证普通语料 `<unk>` 为 0
+- [x] 验证 EOS 数量与文档数量守恒
+- [x] 验证全部 token ID 可安全存入 `uint16`
+- [x] 运行完整项目回归，66 项测试全部通过
+- [x] 确认 Pilot 数据继续被 Git 忽略
+- [x] 生成 Day 4 机器可读统计和执行报告
+
+### Tokenizer 配置
+
+| 配置项 | 结果 |
+| --- | --- |
+| 实现库 | `tokenizers==0.23.1` |
+| Tokenizer | ByteLevel BPE |
+| 词表大小 | 16,384 |
+| `min_frequency` | 2 |
+| `max_token_length` | 64 |
+| Normalizer | NFC |
+| Pre-tokenizer | `ByteLevel(add_prefix_space=False, use_regex=True)` |
+| BPE dropout | `None` |
+| 文档边界 | 每篇文档末尾追加一个 `<eos>` |
+| BOS 策略 | 预训练语料不自动添加 BOS |
+
+### 真实训练结果
+
+运行命令：
+
+```powershell
+python .\scripts\train_tokenizer.py --config .\configs\tokenizer.yaml
+```
+
+| 指标 | 结果 |
+| --- | ---: |
+| Train files | 4 |
+| Train records | 1,824 |
+| Train provided tokens | 1,967,041 |
+| Vocabulary size | 16,384 |
+| Compute merges | 16,124 |
+| Elapsed | 1.789 秒 |
+| Save/reload validation | 通过 |
+
+Tokenizer 主产物 SHA-256：
+
+```text
+b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5
+```
+
+### 全 Pilot 评估结果
+
+运行命令：
+
+```powershell
+python .\scripts\evaluate_tokenizer.py --config .\configs\tokenizer.yaml
+```
+
+| Split | 文档 | Provided tokens | 模型 tokens | Model/Provided | `<unk>` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Train | 1,824 | 1,967,041 | 2,093,241 | 1.064157 | 0 |
+| Validation | 16 | 12,600 | 13,933 | 1.105794 | 0 |
+| Test | 12 | 20,442 | 22,602 | 1.105665 | 0 |
+| **合计** | **1,852** | **2,000,083** | **2,129,776** | **1.064844** | **0** |
+
+守恒关系：
+
+```text
+records = eos_tokens = 1852
+2127924 BPE tokens + 1852 EOS tokens = 2129776 model tokens
+unknown_tokens = 0
+```
+
+### 关键结论
+
+1. 项目模型 token 数比 FineWeb-Edu provided tokens 高约 6.48%，后续训练预算必须使用实际模型 token；
+2. 按 Pilot train 比例估算，350M provided-token Full 语料的 train split 约有 365,005,947 个模型 token；
+3. 1,122 篇文档超过 512-token 上下文，占 60.58%，下一阶段必须正确切块而不是整体截断；
+4. 全部普通语料的 `<unk>` 数量为 0，ByteLevel 覆盖符合预期；
+5. 最大 token ID 为 16,383，`uint16` 足以存储 tokenized binary；
+6. Day 4 不生成 `.bin/.idx`，避免在 Dataset/DataLoader 设计前过早冻结二进制格式。
+
+### 测试结果
+
+Tokenizer 专项测试：
+
+```text
+37 passed in 0.23s
+```
+
+完整项目回归：
+
+```text
+66 passed in 44.71s
+```
+
+完整回归包含 Day 1～Day 3 的原有 29 项测试和 Day 4 新增的 37 项测试，没有失败或错误。
+
+### 新增或修改文件
+
+- `requirements.txt`
+- `configs/tokenizer.yaml`
+- `tokenizer/__init__.py`
+- `tokenizer/bpe.py`
+- `scripts/train_tokenizer.py`
+- `scripts/evaluate_tokenizer.py`
+- `tests/test_tokenizer.py`
+- `tokenizer/artifacts/tokenizer.json`
+- `tokenizer/artifacts/tokenizer_config.json`
+- `tokenizer/artifacts/vocab.json`
+- `tokenizer/artifacts/merges.txt`
+- `reports/day-04-tokenizer-stats.json`
+- `reports/day-04-tokenizer-report.md`
+- `reports/daily-log.md`
+- `README.md`
+
+### 遇到的问题与处理
+
+1. PowerShell 和聊天界面可能转义 `<bos>` 等字符串：通过 Python 读取 YAML 并打印替换后的显示值，确认文件内特殊 token 正确；
+2. `tokenizer/__init__.py` 原本为空，复制代码时 Windows 提示同名文件：确认目标仅为零字节占位文件后安全替换；
+3. `git diff --check` 显示 LF 将来可能转换为 CRLF：这是 Windows Git 行尾提示，不是空白错误；
+4. Pilot 中 60.58% 文档超过上下文长度：保留原文，后续在 tokenized Dataset 阶段切块；
+5. validation/test 的 Model/Provided 比例高于 train：两个 split 样本量很小，仅作真实统计，不据此调整 Tokenizer。
+
+### Day 4 验收状态
+
+- [x] Tokenizer 配置与依赖固定
+- [x] Validation/test 未参与 BPE 训练
+- [x] 16,384 词表训练完成
+- [x] 特殊 token ID 固定
+- [x] 保存和重新加载通过
+- [x] 三个 split 统计完成
+- [x] EOS、总量和 split 统计守恒
+- [x] 普通语料 `<unk>` 为 0
+- [x] 专项测试通过
+- [x] 完整项目回归通过
+- [x] 统计报告和执行报告生成
+
+Git 精确暂存、提交和推送将在文档定稿后执行，并作为 Day 4 从 95% 更新到 100% 的最终交付门。
+
+### 下一阶段
+
+- 冻结 `uint16` tokenized binary 和索引格式；
+- 使用当前权威 Tokenizer 编码语料；
+- 实现 512-token 训练序列切块；
+- 保留 `<eos>` 文档边界；
+- 实现 memory-map Dataset/DataLoader；
+- 为数据守恒、切块、抽样和恢复行为增加自动测试；
+- 在正式预训练前保持 Tokenizer 词表与特殊 token ID 不变。

@@ -1,0 +1,147 @@
+{
+  "context_length": 512,
+  "projection": {
+    "estimated_full_train_model_tokens": 365005947,
+    "full_provided_token_target": 350000000,
+    "is_estimate_only": true,
+    "pilot_train_model_to_provided_ratio": 1.0641572798940133,
+    "train_split_ratio": 0.98
+  },
+  "schema_version": 1,
+  "source": {
+    "configuration": "sample-10BT",
+    "dataset": "HuggingFaceFW/fineweb-edu",
+    "manifest": "data/processed/fineweb_edu_corpus/manifest.json",
+    "manifest_sha256": "972c3c3e1733a3535aabb67b3153fc881d0c46f76849a3ff8e522ad18377a8ce",
+    "revision": "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+  },
+  "splits": {
+    "test": {
+      "bpe_to_provided_token_ratio": 1.1050777810390373,
+      "bpe_tokens_without_eos": 22590,
+      "bytes_per_bpe_token": 4.245285524568393,
+      "characters": 95678,
+      "characters_per_bpe_token": 4.2354138999557325,
+      "context_length": 512,
+      "document_tokens": {
+        "maximum": 14604,
+        "mean": 1883.5,
+        "minimum": 218,
+        "p50": 748.5,
+        "p95": 7481.499999999991,
+        "p99": 13179.500000000007
+      },
+      "documents_over_context": 7,
+      "documents_over_context_ratio": 0.5833333333333334,
+      "eos_tokens": 12,
+      "files": 4,
+      "maximum_token_id": 16374,
+      "minimum_token_id": 1,
+      "model_to_provided_token_ratio": 1.1056648077487525,
+      "provided_tokens": 20442,
+      "records": 12,
+      "split": "test",
+      "total_model_tokens": 22602,
+      "unknown_tokens": 0,
+      "utf8_bytes": 95901
+    },
+    "train": {
+      "bpe_to_provided_token_ratio": 1.0632299987646419,
+      "bpe_tokens_without_eos": 2091417,
+      "bytes_per_bpe_token": 4.351451671283154,
+      "characters": 9069509,
+      "characters_per_bpe_token": 4.336537859260013,
+      "context_length": 512,
+      "document_tokens": {
+        "maximum": 27029,
+        "mean": 1147.610197368421,
+        "minimum": 69,
+        "p50": 646.5,
+        "p95": 3409.249999999996,
+        "p99": 9480.89
+      },
+      "documents_over_context": 1107,
+      "documents_over_context_ratio": 0.6069078947368421,
+      "eos_tokens": 1824,
+      "files": 4,
+      "maximum_token_id": 16383,
+      "minimum_token_id": 1,
+      "model_to_provided_token_ratio": 1.0641572798940133,
+      "provided_tokens": 1967041,
+      "records": 1824,
+      "split": "train",
+      "total_model_tokens": 2093241,
+      "unknown_tokens": 0,
+      "utf8_bytes": 9100700
+    },
+    "validation": {
+      "bpe_to_provided_token_ratio": 1.1045238095238095,
+      "bpe_tokens_without_eos": 13917,
+      "bytes_per_bpe_token": 4.133505784292592,
+      "characters": 57346,
+      "characters_per_bpe_token": 4.120571962348207,
+      "context_length": 512,
+      "document_tokens": {
+        "maximum": 2721,
+        "mean": 870.8125,
+        "minimum": 310,
+        "p50": 510.5,
+        "p95": 2401.5,
+        "p99": 2657.1
+      },
+      "documents_over_context": 8,
+      "documents_over_context_ratio": 0.5,
+      "eos_tokens": 16,
+      "files": 4,
+      "maximum_token_id": 16369,
+      "minimum_token_id": 1,
+      "model_to_provided_token_ratio": 1.1057936507936508,
+      "provided_tokens": 12600,
+      "records": 16,
+      "split": "validation",
+      "total_model_tokens": 13933,
+      "unknown_tokens": 0,
+      "utf8_bytes": 57526
+    }
+  },
+  "storage": {
+    "binary_dataset_generated": false,
+    "minimum_unsigned_dtype": "uint16",
+    "uint16_is_sufficient": true
+  },
+  "tokenizer": {
+    "config_path": "tokenizer/artifacts/tokenizer_config.json",
+    "config_sha256": "8622711407aab3f299996b7d3009d4f4447ae35879ca8e50451b5f0adbdf5141",
+    "core_artifact_hashes": {
+      "merges": "825232ee99b639053f05485f7e8fa1692468fe3a94de7b1a0abb3b0b4e2413bc",
+      "tokenizer": "b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5",
+      "vocab": "0032f0364595f3b23d339bcb80027e5cabd13b3d8b52add066b83914f02f8f2e"
+    },
+    "path": "tokenizer/artifacts/tokenizer.json",
+    "sha256": "b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5",
+    "special_token_ids": {
+      "bos": 0,
+      "eos": 1,
+      "pad": 2,
+      "unk": 3
+    },
+    "vocab_size": 16384
+  },
+  "totals": {
+    "bpe_to_provided_token_ratio": 1.0639178474093325,
+    "bpe_tokens_without_eos": 2127924,
+    "bytes_per_bpe_token": 4.34889920880633,
+    "characters": 9222533,
+    "characters_per_bpe_token": 4.334051874033095,
+    "documents_over_context": 1122,
+    "documents_over_context_ratio": 0.6058315334773218,
+    "eos_tokens": 1852,
+    "files": 12,
+    "model_to_provided_token_ratio": 1.0648438089819272,
+    "provided_tokens": 2000083,
+    "records": 1852,
+    "total_model_tokens": 2129776,
+    "unknown_tokens": 0,
+    "utf8_bytes": 9254127
+  }
+}

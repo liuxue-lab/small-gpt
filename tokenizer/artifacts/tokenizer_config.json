@@ -1,0 +1,111 @@
+{
+  "artifacts": {
+    "merges": {
+      "filename": "merges.txt",
+      "sha256": "825232ee99b639053f05485f7e8fa1692468fe3a94de7b1a0abb3b0b4e2413bc",
+      "size_bytes": 143681
+    },
+    "tokenizer": {
+      "filename": "tokenizer.json",
+      "sha256": "b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5",
+      "size_bytes": 1137073
+    },
+    "vocab": {
+      "filename": "vocab.json",
+      "sha256": "0032f0364595f3b23d339bcb80027e5cabd13b3d8b52add066b83914f02f8f2e",
+      "size_bytes": 248219
+    }
+  },
+  "config_fingerprint": "33e7e214ac488ae00dff99bf18a631f30ccb0150036db5b4c25f367e79ef1b85",
+  "document_boundaries": {
+    "add_bos": false,
+    "append_eos_per_document": true
+  },
+  "library": {
+    "name": "tokenizers",
+    "version": "0.23.1"
+  },
+  "schema_version": 1,
+  "tokenizer": {
+    "byte_fallback": false,
+    "decoder": {
+      "type": "byte_level"
+    },
+    "normalizer": "nfc",
+    "pre_tokenizer": {
+      "add_prefix_space": false,
+      "initial_alphabet": "byte_level",
+      "type": "byte_level",
+      "use_regex": true
+    },
+    "special_tokens": [
+      {
+        "id": 0,
+        "name": "bos",
+        "token": "<bos>"
+      },
+      {
+        "id": 1,
+        "name": "eos",
+        "token": "<eos>"
+      },
+      {
+        "id": 2,
+        "name": "pad",
+        "token": "<pad>"
+      },
+      {
+        "id": 3,
+        "name": "unk",
+        "token": "<unk>"
+      }
+    ],
+    "type": "byte_level_bpe",
+    "vocab_size": 16384
+  },
+  "training": {
+    "configuration": "sample-10BT",
+    "corpus": {
+      "characters": 9069509,
+      "provided_tokens": 1967041,
+      "records": 1824,
+      "utf8_bytes": 9100700
+    },
+    "dataset": "HuggingFaceFW/fineweb-edu",
+    "deterministic_order": "shard_then_line",
+    "input_files": [
+      "data/processed/fineweb_edu_corpus/shards/shard-00000/train.jsonl",
+      "data/processed/fineweb_edu_corpus/shards/shard-00001/train.jsonl",
+      "data/processed/fineweb_edu_corpus/shards/shard-00002/train.jsonl",
+      "data/processed/fineweb_edu_corpus/shards/shard-00003/train.jsonl"
+    ],
+    "manifest": {
+      "path": "data/processed/fineweb_edu_corpus/manifest.json",
+      "sha256": "972c3c3e1733a3535aabb67b3153fc881d0c46f76849a3ff8e522ad18377a8ce"
+    },
+    "model_config_validation": {
+      "configs": [
+        {
+          "context_length": 128,
+          "path": "configs/debug.yaml",
+          "vocab_size": 16384
+        },
+        {
+          "context_length": 512,
+          "path": "configs/baseline.yaml",
+          "vocab_size": 16384
+        }
+      ],
+      "max_context_length": 512
+    },
+    "revision": "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9",
+    "split": "train",
+    "trainer": {
+      "dropout": null,
+      "initial_alphabet": "byte_level",
+      "max_token_length": 64,
+      "min_frequency": 2,
+      "vocab_size": 16384
+    }
+  }
+}
