@@ -1,0 +1,397 @@
+{
+  "binary_format": {
+    "dtype": "<u2",
+    "dtype_code": 1,
+    "endian": "little",
+    "endian_code": 1,
+    "flags": {
+      "add_bos_bit": 1,
+      "add_pad_bit": 2,
+      "append_eos_bit": 0
+    },
+    "header_bytes": 64,
+    "magic": "SGPTTOK1",
+    "schema_version": 1,
+    "split_codes": {
+      "test": 2,
+      "train": 0,
+      "validation": 1
+    },
+    "struct_format": "<8sHHBBHIB3xQQQIII4x"
+  },
+  "config_fingerprint": "a3eb6012c1cb3e2dab2a7839bebb04530563b19b4d5f7d8022e3c121b13ca7f3",
+  "dataset_contract": {
+    "allow_cross_document_windows": true,
+    "allow_cross_split_windows": false,
+    "allow_cross_storage_shard_windows": true,
+    "default_pin_memory": false,
+    "evaluation_mode": "sequential_non_overlapping",
+    "next_token_read_length": "context_length + 1",
+    "output_torch_dtype": "long",
+    "storage_view": "split_logical_stream",
+    "token_dtype_on_disk": "<u2",
+    "train_base_seed": 42,
+    "train_mode": "all_starts",
+    "train_sampler": "epoch_random_window_with_replacement"
+  },
+  "encoding": {
+    "add_bos": false,
+    "add_pad": false,
+    "allow_cross_document_windows": true,
+    "allow_cross_split_windows": false,
+    "allow_cross_storage_shard_windows": true,
+    "append_eos_per_document": true,
+    "reject_empty_document": true
+  },
+  "format_name": "small_gpt_tokenized_corpus",
+  "index_format": {
+    "document_identity": "text_sha256_raw_32_bytes",
+    "header_bytes": 128,
+    "header_struct_format": "<8sHHHBBQQQQ32sQI36x",
+    "length_dtype": "<u8",
+    "length_includes_eos": true,
+    "magic": "SGPTIDX1",
+    "offset_dtype": "<u8",
+    "offset_semantics": "shard_local_token_offset",
+    "record_bytes": 48,
+    "record_struct_format": "<QQ32s",
+    "schema_version": 1
+  },
+  "profile": "pilot",
+  "schema_version": 1,
+  "sharding": {
+    "document_atomic": true,
+    "storage_dropped_tokens": 0,
+    "target_model_tokens_per_shard": 1000000
+  },
+  "source": {
+    "configuration": "sample-10BT",
+    "dataset": "HuggingFaceFW/fineweb-edu",
+    "deterministic_order": "source_shard_then_line",
+    "expected_source_shards": 4,
+    "manifest": "data/processed/fineweb_edu_corpus/manifest.json",
+    "manifest_sha256": "972c3c3e1733a3535aabb67b3153fc881d0c46f76849a3ff8e522ad18377a8ce",
+    "revision": "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9",
+    "split_order": [
+      "train",
+      "validation",
+      "test"
+    ]
+  },
+  "splits": {
+    "test": {
+      "appended_eos_tokens": 12,
+      "maximum_token_id": 16374,
+      "minimum_token_id": 1,
+      "model_tokens": 22602,
+      "provided_tokens": 20442,
+      "raw_bpe_tokens": 22590,
+      "records": 12,
+      "shards": [
+        {
+          "binary": {
+            "bytes": 45268,
+            "path": "test/shard-00000.bin",
+            "payload_bytes": 45204,
+            "sha256": "983c66ca7c4703f92eb747dded4e82d966682ab2881ba0f25474a5a07782f39f"
+          },
+          "document_count": 12,
+          "global_document_start": 0,
+          "global_token_start": 0,
+          "index": {
+            "bytes": 704,
+            "entries_bytes": 576,
+            "path": "test/shard-00000.idx",
+            "sha256": "221e3bbf75801d01fb0df039dc2e7eed1d4ac527958a92c480e4b9879a1888ff"
+          },
+          "shard_index": 0,
+          "statistics": {
+            "appended_eos_tokens": 12,
+            "maximum_token_id": 16374,
+            "minimum_token_id": 1,
+            "model_tokens": 22602,
+            "provided_tokens": 20442,
+            "raw_bpe_tokens": 22590,
+            "records": 12,
+            "special_token_occurrences": {
+              "bos": 0,
+              "eos": 12,
+              "pad": 0,
+              "unk": 0
+            },
+            "storage_dropped_tokens": 0,
+            "unknown_tokens": 0,
+            "writer_inserted_bos_tokens": 0,
+            "writer_inserted_pad_tokens": 0
+          },
+          "token_count": 22602
+        }
+      ],
+      "source_files": [
+        "data/processed/fineweb_edu_corpus/shards/shard-00000/test.jsonl",
+        "data/processed/fineweb_edu_corpus/shards/shard-00001/test.jsonl",
+        "data/processed/fineweb_edu_corpus/shards/shard-00002/test.jsonl",
+        "data/processed/fineweb_edu_corpus/shards/shard-00003/test.jsonl"
+      ],
+      "special_token_occurrences": {
+        "bos": 0,
+        "eos": 12,
+        "pad": 0,
+        "unk": 0
+      },
+      "storage_dropped_tokens": 0,
+      "storage_shards": 1,
+      "unknown_tokens": 0,
+      "writer_inserted_bos_tokens": 0,
+      "writer_inserted_pad_tokens": 0
+    },
+    "train": {
+      "appended_eos_tokens": 1824,
+      "maximum_token_id": 16383,
+      "minimum_token_id": 1,
+      "model_tokens": 2093241,
+      "provided_tokens": 1967041,
+      "raw_bpe_tokens": 2091417,
+      "records": 1824,
+      "shards": [
+        {
+          "binary": {
+            "bytes": 1978358,
+            "path": "train/shard-00000.bin",
+            "payload_bytes": 1978294,
+            "sha256": "979694aa7c40e2a0ae4014fdca7603bffb1bc2a97c3c15c28c84e00ffee4ba98"
+          },
+          "document_count": 923,
+          "global_document_start": 0,
+          "global_token_start": 0,
+          "index": {
+            "bytes": 44432,
+            "entries_bytes": 44304,
+            "path": "train/shard-00000.idx",
+            "sha256": "b4226b53b411137a291192043e71b4938a6e660a48e361d00c9b424d26096b3b"
+          },
+          "shard_index": 0,
+          "statistics": {
+            "appended_eos_tokens": 923,
+            "maximum_token_id": 16383,
+            "minimum_token_id": 1,
+            "model_tokens": 989147,
+            "provided_tokens": 928562,
+            "raw_bpe_tokens": 988224,
+            "records": 923,
+            "special_token_occurrences": {
+              "bos": 0,
+              "eos": 923,
+              "pad": 0,
+              "unk": 0
+            },
+            "storage_dropped_tokens": 0,
+            "unknown_tokens": 0,
+            "writer_inserted_bos_tokens": 0,
+            "writer_inserted_pad_tokens": 0
+          },
+          "token_count": 989147
+        },
+        {
+          "binary": {
+            "bytes": 1997708,
+            "path": "train/shard-00001.bin",
+            "payload_bytes": 1997644,
+            "sha256": "3c51a8d787504cb07c7691282533a14dd3de9bbd3405a87c5866ed84f0f45de5"
+          },
+          "document_count": 816,
+          "global_document_start": 923,
+          "global_token_start": 989147,
+          "index": {
+            "bytes": 39296,
+            "entries_bytes": 39168,
+            "path": "train/shard-00001.idx",
+            "sha256": "bb602c90d994302f0f3b46f38d311e9b625c5fc4e60bd2c5d68a2b67f687f686"
+          },
+          "shard_index": 1,
+          "statistics": {
+            "appended_eos_tokens": 816,
+            "maximum_token_id": 16383,
+            "minimum_token_id": 1,
+            "model_tokens": 998822,
+            "provided_tokens": 940017,
+            "raw_bpe_tokens": 998006,
+            "records": 816,
+            "special_token_occurrences": {
+              "bos": 0,
+              "eos": 816,
+              "pad": 0,
+              "unk": 0
+            },
+            "storage_dropped_tokens": 0,
+            "unknown_tokens": 0,
+            "writer_inserted_bos_tokens": 0,
+            "writer_inserted_pad_tokens": 0
+          },
+          "token_count": 998822
+        },
+        {
+          "binary": {
+            "bytes": 210608,
+            "path": "train/shard-00002.bin",
+            "payload_bytes": 210544,
+            "sha256": "dbbbd12e12f44c1a90d19af24bb77dc4f38550a24c80b2278ccc96fc5d006e2c"
+          },
+          "document_count": 85,
+          "global_document_start": 1739,
+          "global_token_start": 1987969,
+          "index": {
+            "bytes": 4208,
+            "entries_bytes": 4080,
+            "path": "train/shard-00002.idx",
+            "sha256": "f5a264a3b06b2a0e97da6142de8a7119258d720e46d090d2e5151a33ebec1d10"
+          },
+          "shard_index": 2,
+          "statistics": {
+            "appended_eos_tokens": 85,
+            "maximum_token_id": 16383,
+            "minimum_token_id": 1,
+            "model_tokens": 105272,
+            "provided_tokens": 98462,
+            "raw_bpe_tokens": 105187,
+            "records": 85,
+            "special_token_occurrences": {
+              "bos": 0,
+              "eos": 85,
+              "pad": 0,
+              "unk": 0
+            },
+            "storage_dropped_tokens": 0,
+            "unknown_tokens": 0,
+            "writer_inserted_bos_tokens": 0,
+            "writer_inserted_pad_tokens": 0
+          },
+          "token_count": 105272
+        }
+      ],
+      "source_files": [
+        "data/processed/fineweb_edu_corpus/shards/shard-00000/train.jsonl",
+        "data/processed/fineweb_edu_corpus/shards/shard-00001/train.jsonl",
+        "data/processed/fineweb_edu_corpus/shards/shard-00002/train.jsonl",
+        "data/processed/fineweb_edu_corpus/shards/shard-00003/train.jsonl"
+      ],
+      "special_token_occurrences": {
+        "bos": 0,
+        "eos": 1824,
+        "pad": 0,
+        "unk": 0
+      },
+      "storage_dropped_tokens": 0,
+      "storage_shards": 3,
+      "unknown_tokens": 0,
+      "writer_inserted_bos_tokens": 0,
+      "writer_inserted_pad_tokens": 0
+    },
+    "validation": {
+      "appended_eos_tokens": 16,
+      "maximum_token_id": 16369,
+      "minimum_token_id": 1,
+      "model_tokens": 13933,
+      "provided_tokens": 12600,
+      "raw_bpe_tokens": 13917,
+      "records": 16,
+      "shards": [
+        {
+          "binary": {
+            "bytes": 27930,
+            "path": "validation/shard-00000.bin",
+            "payload_bytes": 27866,
+            "sha256": "51d0581559ed5bbd3912e51a205201554744a0a7e17cdc4afc90eff1d24e912a"
+          },
+          "document_count": 16,
+          "global_document_start": 0,
+          "global_token_start": 0,
+          "index": {
+            "bytes": 896,
+            "entries_bytes": 768,
+            "path": "validation/shard-00000.idx",
+            "sha256": "6b820d16bec55a1d5a2a5e86175a50e11c3b482e7709fd01dba082f2ba25d3e5"
+          },
+          "shard_index": 0,
+          "statistics": {
+            "appended_eos_tokens": 16,
+            "maximum_token_id": 16369,
+            "minimum_token_id": 1,
+            "model_tokens": 13933,
+            "provided_tokens": 12600,
+            "raw_bpe_tokens": 13917,
+            "records": 16,
+            "special_token_occurrences": {
+              "bos": 0,
+              "eos": 16,
+              "pad": 0,
+              "unk": 0
+            },
+            "storage_dropped_tokens": 0,
+            "unknown_tokens": 0,
+            "writer_inserted_bos_tokens": 0,
+            "writer_inserted_pad_tokens": 0
+          },
+          "token_count": 13933
+        }
+      ],
+      "source_files": [
+        "data/processed/fineweb_edu_corpus/shards/shard-00000/validation.jsonl",
+        "data/processed/fineweb_edu_corpus/shards/shard-00001/validation.jsonl",
+        "data/processed/fineweb_edu_corpus/shards/shard-00002/validation.jsonl",
+        "data/processed/fineweb_edu_corpus/shards/shard-00003/validation.jsonl"
+      ],
+      "special_token_occurrences": {
+        "bos": 0,
+        "eos": 16,
+        "pad": 0,
+        "unk": 0
+      },
+      "storage_dropped_tokens": 0,
+      "storage_shards": 1,
+      "unknown_tokens": 0,
+      "writer_inserted_bos_tokens": 0,
+      "writer_inserted_pad_tokens": 0
+    }
+  },
+  "status": "complete",
+  "tokenizer": {
+    "file": "tokenizer/artifacts/tokenizer.json",
+    "library": {
+      "name": "tokenizers",
+      "version": "0.23.1"
+    },
+    "metadata": "tokenizer/artifacts/tokenizer_config.json",
+    "metadata_sha256": "8622711407aab3f299996b7d3009d4f4447ae35879ca8e50451b5f0adbdf5141",
+    "normalizer": "nfc",
+    "sha256": "b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5",
+    "special_token_ids": {
+      "bos": 0,
+      "eos": 1,
+      "pad": 2,
+      "unk": 3
+    },
+    "vocab_size": 16384
+  },
+  "totals": {
+    "appended_eos_tokens": 1852,
+    "maximum_token_id": 16383,
+    "minimum_token_id": 1,
+    "model_tokens": 2129776,
+    "provided_tokens": 2000083,
+    "raw_bpe_tokens": 2127924,
+    "records": 1852,
+    "special_token_occurrences": {
+      "bos": 0,
+      "eos": 1852,
+      "pad": 0,
+      "unk": 0
+    },
+    "storage_dropped_tokens": 0,
+    "storage_shards": 5,
+    "token_payload_bytes": 4259552,
+    "unknown_tokens": 0,
+    "writer_inserted_bos_tokens": 0,
+    "writer_inserted_pad_tokens": 0
+  }
+}

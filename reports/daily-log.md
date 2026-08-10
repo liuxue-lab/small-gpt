@@ -464,3 +464,208 @@ Git 精确暂存、提交和推送将在文档定稿后执行，并作为 Day 4 
 - 实现 memory-map Dataset/DataLoader；
 - 为数据守恒、切块、抽样和恢复行为增加自动测试；
 - 在正式预训练前保持 Tokenizer 词表与特殊 token ID 不变。
+
+## Day 5：Tokenized Data、Dataset 与 DataLoader
+
+日期：2026-08-10 ～ 2026-08-11
+
+### 今日目标
+
+- 冻结训练 token 二进制格式与文档索引格式；
+- 使用 Day 4 的权威 Tokenizer 无损编码完整 2M Pilot；
+- 实现文档原子分片、断点恢复、完整性校验和原子发布；
+- 将多个物理 storage shard 映射为 split 内连续逻辑 token 流；
+- 实现因果 `T+1` Dataset、训练采样器和验证/测试顺序窗口；
+- 在 Windows 下验证 Dataset/DataLoader 与多 worker；
+- 完成真实边界检查、专项测试、完整回归和报告。
+
+### 已完成任务
+
+- [x] 新增 `configs/tokenized_data.yaml` 并冻结 schema version 1
+- [x] 固定 source manifest 与 Tokenizer SHA-256 身份
+- [x] 固定 little-endian `uint16` token payload
+- [x] 固定 64-byte token header
+- [x] 固定 128-byte index header 与 48-byte document record
+- [x] 实现 token/index header 的打包、解析与验证
+- [x] 实现文档原子 tokenization 与 storage sharding
+- [x] 每篇文档恰好追加一个 `<eos>`，不主动添加 BOS/PAD
+- [x] 实现 staging、state checkpoint、resume 和原子发布
+- [x] 实现完成态身份匹配 no-op 与拒绝静默覆盖
+- [x] 实现 per-file 大小、SHA-256、索引连续性和 EOS 校验
+- [x] 实现跨 storage shard 的 `SplitTokenStore`
+- [x] 实现因果 `CausalWindowDataset`
+- [x] 实现可复现的 epoch random train sampler
+- [x] 实现 validation/test 顺序、非重叠窗口
+- [x] 完成完整 Pilot 的真实编码并发布 5 个 storage shards
+- [x] 验证 `T=128` 与 `T=512` 的窗口数量和 shift 关系
+- [x] 验证两个真实 train shard 边界的跨 shard 读取
+- [x] 验证三个 split 的 Windows `num_workers=2` DataLoader batch
+- [x] Day 5 三组专项测试共 27 项全部通过
+- [x] 完整项目回归 93 项全部通过
+- [x] 确认 tokenized binary 与 manifest 继续被 Git 忽略
+- [x] 将完成态 manifest 固化为机器可读统计报告
+- [x] 生成设计文档、执行报告并更新 README
+
+### 冻结身份
+
+| 项目 | 结果 |
+| --- | --- |
+| Source manifest SHA-256 | `972c3c3e1733a3535aabb67b3153fc881d0c46f76849a3ff8e522ad18377a8ce` |
+| Tokenizer SHA-256 | `b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5` |
+| Vocabulary size | 16,384 |
+| Special IDs | `<bos>=0`、`<eos>=1`、`<pad>=2`、`<unk>=3` |
+| Split order | train → validation → test |
+| Tokenized manifest fingerprint | `a3eb6012c1cb3e2dab2a7839bebb04530563b19b4d5f7d8022e3c121b13ca7f3` |
+
+### 二进制格式
+
+| 项目 | 结果 |
+| --- | --- |
+| Token magic | `SGPTTOK1` |
+| Token header | 64 bytes |
+| Token dtype | little-endian `uint16`（`<u2`） |
+| Index magic | `SGPTIDX1` |
+| Index header | 128 bytes |
+| Index record | 48 bytes |
+| Index 内容 | shard-local offset、length、原始文本 SHA-256 |
+| Shard target | 1,000,000 model tokens |
+| Sharding | 文档原子，不拆分文档 |
+| 跨界策略 | 可跨文档和 storage shard，不跨 split |
+
+### 真实 Pilot 编码结果
+
+运行命令：
+
+```powershell
+python .\scripts\tokenize_corpus.py --config .\configs\tokenized_data.yaml --profile pilot
+```
+
+| Split | 文档 | 模型 tokens | Storage shards |
+| --- | ---: | ---: | ---: |
+| Train | 1,824 | 2,093,241 | 3 |
+| Validation | 16 | 13,933 | 1 |
+| Test | 12 | 22,602 | 1 |
+| **合计** | **1,852** | **2,129,776** | **5** |
+
+Train storage shards：
+
+| Shard | 文档 | Tokens |
+| --- | ---: | ---: |
+| `shard-00000` | 923 | 989,147 |
+| `shard-00001` | 816 | 998,822 |
+| `shard-00002` | 85 | 105,272 |
+
+总 token payload 为 4,259,552 bytes，严格等于：
+
+```text
+2,129,776 model tokens × 2 bytes/token = 4,259,552 bytes
+```
+
+所有 split 的文档数和模型 token 数均与 Day 4 权威统计完全一致，没有丢 token、重复 EOS 或意外 BOS/PAD。
+
+### Dataset 与 DataLoader 验证
+
+| Context `T` | Train `all_starts` | Validation sequential | Test sequential |
+| ---: | ---: | ---: | ---: |
+| 128 | 2,093,113 | 108 | 176 |
+| 512 | 2,092,729 | 27 | 44 |
+
+Train split 的额外顺序窗口验证：
+
+| Context `T` | Sequential windows | Remainder |
+| ---: | ---: | ---: |
+| 128 | 16,353 | 56 |
+| 512 | 4,088 | 184 |
+
+计数满足：
+
+```text
+all_starts = split_tokens - T
+sequential = floor((split_tokens - 1) / T)
+remainder = (split_tokens - 1) mod T
+```
+
+真实 train shard 边界验证：
+
+| Boundary | Window start | Context | 结果 |
+| ---: | ---: | ---: | --- |
+| 989,147 | 988,891 | 512 | shape 正确，`shift=True` |
+| 1,987,969 | 1,987,713 | 512 | shape 正确，`shift=True` |
+
+在 `context_length=512`、`batch_size=4`、`num_workers=2` 下，train、validation、test 均成功产生：
+
+```text
+x=(4, 512), y=(4, 512), dtype=torch.int64, shift=True
+```
+
+### 测试结果
+
+Day 5 专项测试：
+
+```text
+tests/test_binary_format.py  13 passed
+tests/test_tokenization.py     6 passed
+tests/test_dataset.py          8 passed
+合计                          27 passed
+```
+
+完整项目回归：
+
+```text
+93 passed in 8.65s
+```
+
+完整回归包含 Day 1～Day 4 的原有 66 项测试和 Day 5 新增的 27 项测试，没有失败、错误或回退。
+
+### 新增或修改文件
+
+- `configs/tokenized_data.yaml`
+- `data_pipeline/__init__.py`
+- `data_pipeline/binary_format.py`
+- `data_pipeline/tokenization.py`
+- `data_pipeline/dataset.py`
+- `scripts/tokenize_corpus.py`
+- `scripts/inspect_tokenized_data.py`
+- `tests/test_binary_format.py`
+- `tests/test_tokenization.py`
+- `tests/test_dataset.py`
+- `reports/day-05-tokenized-data-design.md`
+- `reports/day-05-tokenized-data-stats.json`
+- `reports/day-05-execution-report.md`
+- `reports/daily-log.md`
+- `README.md`
+
+### 关键结论
+
+1. Pilot 的 2,129,776 个模型 token 已无损转换为训练可读取的 `<u2` payload；
+2. storage shard 只是物理存储边界，不会切断 Dataset 的 split 内逻辑 token 流；
+3. Dataset 使用 `T+1` token 构造严格右移一位的 `x/y`，不存在 off-by-one；
+4. validation/test 使用确定性顺序窗口，train 使用可复现的随机起点采样；
+5. tokenization 可在 shard 边界恢复，并在完成后原子发布；
+6. 二进制数据由 Git 忽略，权威 manifest 的报告快照进入 Git，兼顾仓库体积和可审计性；
+7. Day 5 未实现 GPT、未启动 Full 语料采集、未使用 AutoDL，范围保持清晰。
+
+### Day 5 验收状态
+
+- [x] 二进制和索引契约冻结
+- [x] Source/Tokenizer 身份固定
+- [x] Pilot 真实编码完成
+- [x] Split、文档、EOS 和 token 总量守恒
+- [x] Resume、no-op、原子发布和损坏检测通过测试
+- [x] Memory-map 与跨 shard slice 通过
+- [x] 因果 `T+1` 与两个真实 shard 边界通过
+- [x] Windows DataLoader 多 worker 通过
+- [x] 27 项专项测试通过
+- [x] 93 项完整回归通过
+- [x] 大型数据继续由 Git 忽略
+- [x] 统计、设计、执行报告与 README 完成
+
+### 下一阶段
+
+- 从零实现 token embedding 与位置 embedding；
+- 实现 multi-head causal self-attention；
+- 实现 MLP、LayerNorm、残差连接和 Transformer Block；
+- 组装 Decoder-only GPT 与 tied output head；
+- 校验因果 mask、tensor shape、参数量和初始化；
+- 使用 Debug 配置完成单批次前向、反向和过拟合测试；
+- Full 语料采集与租用 GPU 正式训练继续保持未启动状态。
