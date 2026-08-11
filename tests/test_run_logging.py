@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from train import (
+    CheckpointRecord,
     EvaluationMetrics,
     JsonlMetricLogger,
     MetricLoggingError,
@@ -15,6 +16,8 @@ from train import (
     TrainerState,
     UpdateMetrics,
     initialize_run_directory,
+    open_existing_run_directory,
+    read_metric_events,
     validate_run_id,
 )
 
@@ -255,3 +258,119 @@ def test_append_mode_preserves_existing_complete_lines(tmp_path):
         for line in paths.metrics_path.read_text(encoding="utf-8").splitlines()
     ]
     assert [event["event"] for event in events] == ["first", "second"]
+
+
+def test_checkpoint_event_is_flushed_after_state_save_commit(tmp_path):
+    paths = initialize_fixture(tmp_path)
+    state = state_at_step_one()
+    state.record_checkpoint()
+    record = CheckpointRecord(
+        path=tmp_path / "checkpoints" / "step-00000001.pt",
+        file_size=1234,
+        global_step=1,
+        tokens_seen=8,
+    )
+
+    with JsonlMetricLogger(paths.metrics_path) as logger:
+        logger.log_checkpoint(
+            record,
+            state=state,
+            checkpoint_path="checkpoints/day07-test/step-00000001.pt",
+            elapsed_seconds=0.25,
+        )
+
+    event = json.loads(paths.metrics_path.read_text(encoding="utf-8"))
+    assert event == {
+        "checkpoint_bytes": 1234,
+        "checkpoint_path": "checkpoints/day07-test/step-00000001.pt",
+        "event": "checkpoint",
+        "save_elapsed_seconds": 0.25,
+        "step": 1,
+        "tokens_seen": 8,
+    }
+
+
+def test_checkpoint_event_rejects_uncommitted_or_mismatched_state(tmp_path):
+    paths = initialize_fixture(tmp_path)
+    state = state_at_step_one()
+    record = CheckpointRecord(
+        path=tmp_path / "step.pt",
+        file_size=10,
+        global_step=1,
+        tokens_seen=8,
+    )
+
+    with JsonlMetricLogger(paths.metrics_path) as logger:
+        with pytest.raises(MetricLoggingError, match="record checkpoint"):
+            logger.log_checkpoint(
+                record,
+                state=state,
+                checkpoint_path="step.pt",
+                elapsed_seconds=0.1,
+            )
+
+
+def test_open_existing_run_validates_identity_without_modifying_files(tmp_path):
+    paths = initialize_fixture(tmp_path)
+    with JsonlMetricLogger(paths.metrics_path) as logger:
+        logger.write_event({"event": "run_start", "step": 0})
+        logger.write_event({"event": "train_update", "step": 1})
+    before = {
+        path: path.read_bytes()
+        for path in (
+            paths.resolved_config_path,
+            paths.metadata_path,
+            paths.metrics_path,
+        )
+    }
+
+    opened = open_existing_run_directory(
+        tmp_path / "runs",
+        run_id="day07-test",
+        expected_resolved_config={
+            "project": {"name": "small-gpt-debug"},
+            "training": {"total_updates": 200},
+        },
+    )
+
+    assert opened == paths
+    assert [event["step"] for event in read_metric_events(paths.metrics_path)] == [
+        0,
+        1,
+    ]
+    assert all(path.read_bytes() == contents for path, contents in before.items())
+
+
+def test_open_existing_run_rejects_config_mismatch(tmp_path):
+    paths = initialize_fixture(tmp_path)
+
+    with pytest.raises(RunDirectoryError, match="does not match"):
+        open_existing_run_directory(
+            tmp_path / "runs",
+            run_id="day07-test",
+            expected_resolved_config={"different": True},
+        )
+
+    assert paths.metadata_path.is_file()
+
+
+@pytest.mark.parametrize(
+    "contents, message",
+    (
+        ('{"event":"ok","step":1}\nnot-json\n', "strict JSON"),
+        ('{"event":"ok","step":2}\n{"event":"back","step":1}\n', "backward"),
+        ('{"event":"bad","step":NaN}\n', "strict JSON"),
+        ('{"event":"ok","step":0}\n\n', "blank"),
+        ('{"event":"unterminated","step":0}', "newline-terminated"),
+    ),
+)
+def test_metric_reader_rejects_corrupt_or_non_monotonic_jsonl(
+    tmp_path,
+    contents,
+    message,
+):
+    path = tmp_path / "metrics.jsonl"
+    path.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(RunDirectoryError, match=message):
+        read_metric_events(path)

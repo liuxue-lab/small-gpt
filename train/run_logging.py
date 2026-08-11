@@ -10,6 +10,7 @@ from typing import Any, TextIO
 
 import yaml
 
+from .checkpoint import CheckpointRecord
 from .evaluation import EvaluationMetrics
 from .precision import PrecisionPolicy
 from .state import TrainerState
@@ -35,6 +36,29 @@ class RunPaths:
     resolved_config_path: Path
     metadata_path: Path
     metrics_path: Path
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant {value!r}")
+
+
+def _strict_json_object(value: Mapping[str, Any], *, field: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field} must be a mapping")
+    try:
+        encoded = json.dumps(
+            dict(value),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        decoded = json.loads(encoded, parse_constant=_reject_json_constant)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise RunDirectoryError(f"{field} must be strict JSON: {error}") from error
+    if not isinstance(decoded, dict):
+        raise RunDirectoryError(f"{field} must encode a JSON object")
+    return decoded
 
 
 def validate_run_id(run_id: str) -> str:
@@ -122,6 +146,133 @@ def initialize_run_directory(
             f"could not initialize run directory {run_dir}: {error}"
         ) from error
 
+    return RunPaths(
+        run_id=run_id,
+        run_dir=run_dir,
+        resolved_config_path=resolved_config_path,
+        metadata_path=metadata_path,
+        metrics_path=metrics_path,
+    )
+
+
+def read_metric_events(path: str | Path) -> tuple[dict[str, Any], ...]:
+    """Read a complete strict-JSONL metric stream without modifying it."""
+
+    metrics_path = Path(path).resolve()
+    if not metrics_path.is_file():
+        raise RunDirectoryError(f"metrics file does not exist: {metrics_path}")
+    try:
+        text = metrics_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise RunDirectoryError(
+            f"could not read metrics file {metrics_path}: {error}"
+        ) from error
+    if text and not text.endswith("\n"):
+        raise RunDirectoryError(
+            "metrics file does not end on a complete newline-terminated event"
+        )
+
+    events: list[dict[str, Any]] = []
+    previous_step = 0
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            raise RunDirectoryError(
+                f"metrics line {line_number} is blank instead of a JSON event"
+            )
+        try:
+            event = json.loads(line, parse_constant=_reject_json_constant)
+        except (ValueError, json.JSONDecodeError) as error:
+            raise RunDirectoryError(
+                f"metrics line {line_number} is not strict JSON: {error}"
+            ) from error
+        if not isinstance(event, dict):
+            raise RunDirectoryError(
+                f"metrics line {line_number} must contain a JSON object"
+            )
+        event_name = event.get("event")
+        if not isinstance(event_name, str) or not event_name:
+            raise RunDirectoryError(
+                f"metrics line {line_number} has no non-empty event name"
+            )
+        step = event.get("step")
+        if step is not None and (
+            isinstance(step, bool) or not isinstance(step, int) or step < 0
+        ):
+            raise RunDirectoryError(
+                f"metrics line {line_number} has an invalid step {step!r}"
+            )
+        if step is not None:
+            if step < previous_step:
+                raise RunDirectoryError(
+                    f"metrics line {line_number} moves step backward from "
+                    f"{previous_step} to {step}"
+                )
+            previous_step = step
+        events.append(event)
+    return tuple(events)
+
+
+def open_existing_run_directory(
+    runs_root: str | Path,
+    *,
+    run_id: str,
+    expected_resolved_config: Mapping[str, Any],
+) -> RunPaths:
+    """Validate an existing run before a resume process appends metrics."""
+
+    run_id = validate_run_id(run_id)
+    expected_config = _strict_json_object(
+        expected_resolved_config,
+        field="expected_resolved_config",
+    )
+    run_dir = Path(runs_root).resolve() / run_id
+    resolved_config_path = run_dir / "resolved-config.yaml"
+    metadata_path = run_dir / "run-metadata.json"
+    metrics_path = run_dir / "metrics.jsonl"
+    if not run_dir.is_dir():
+        raise RunDirectoryError(
+            f"resume run directory does not exist: {run_dir}"
+        )
+    for path in (resolved_config_path, metadata_path, metrics_path):
+        if not path.is_file():
+            raise RunDirectoryError(f"resume run file does not exist: {path}")
+
+    try:
+        saved_config = yaml.safe_load(
+            resolved_config_path.read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
+        raise RunDirectoryError(
+            f"could not read resolved run config {resolved_config_path}: {error}"
+        ) from error
+    if not isinstance(saved_config, Mapping):
+        raise RunDirectoryError("resolved run config must be a mapping")
+    normalized_saved_config = _strict_json_object(
+        saved_config,
+        field="saved_resolved_config",
+    )
+    if normalized_saved_config != expected_config:
+        raise RunDirectoryError(
+            "existing resolved run config does not match the active execution"
+        )
+
+    try:
+        metadata = json.loads(
+            metadata_path.read_text(encoding="utf-8"),
+            parse_constant=_reject_json_constant,
+        )
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
+        raise RunDirectoryError(
+            f"could not read strict run metadata {metadata_path}: {error}"
+        ) from error
+    if not isinstance(metadata, dict):
+        raise RunDirectoryError("run metadata must be a JSON object")
+    if metadata.get("schema_version") != RUN_METADATA_SCHEMA_VERSION:
+        raise RunDirectoryError("run metadata schema version is incompatible")
+    if metadata.get("run_id") != run_id:
+        raise RunDirectoryError("run metadata run_id does not match the directory")
+
+    read_metric_events(metrics_path)
     return RunPaths(
         run_id=run_id,
         run_dir=run_dir,
@@ -274,6 +425,62 @@ class JsonlMetricLogger:
                 "evaluated_tokens": metrics.evaluated_tokens,
                 "evaluated_batches": metrics.evaluated_batches,
                 "elapsed_seconds": metrics.elapsed_seconds,
+            }
+        )
+
+    def log_checkpoint(
+        self,
+        record: CheckpointRecord,
+        *,
+        state: TrainerState,
+        checkpoint_path: str,
+        elapsed_seconds: float,
+    ) -> None:
+        if not isinstance(record, CheckpointRecord):
+            raise TypeError(
+                f"record must be CheckpointRecord, got {type(record)!r}"
+            )
+        if not isinstance(state, TrainerState):
+            raise TypeError(
+                f"state must be TrainerState, got {type(state)!r}"
+            )
+        if not isinstance(checkpoint_path, str) or not checkpoint_path:
+            raise MetricLoggingError(
+                "checkpoint_path must be a non-empty portable string"
+            )
+        if (
+            not isinstance(elapsed_seconds, (int, float))
+            or isinstance(elapsed_seconds, bool)
+            or not math.isfinite(float(elapsed_seconds))
+            or float(elapsed_seconds) < 0.0
+        ):
+            raise MetricLoggingError(
+                "checkpoint elapsed_seconds must be finite and non-negative"
+            )
+        state.validate()
+        if record.global_step != state.global_step:
+            raise MetricLoggingError(
+                "checkpoint record step does not match TrainerState"
+            )
+        if record.tokens_seen != state.tokens_seen:
+            raise MetricLoggingError(
+                "checkpoint record tokens do not match TrainerState"
+            )
+        if record.file_size <= 0:
+            raise MetricLoggingError("checkpoint record file size must be positive")
+        if state.last_save_step != state.global_step:
+            raise MetricLoggingError(
+                "TrainerState must record checkpoint before logging it"
+            )
+
+        self.write_event(
+            {
+                "event": "checkpoint",
+                "step": state.global_step,
+                "tokens_seen": state.tokens_seen,
+                "checkpoint_path": checkpoint_path,
+                "checkpoint_bytes": record.file_size,
+                "save_elapsed_seconds": float(elapsed_seconds),
             }
         )
 

@@ -36,6 +36,11 @@ from .evaluation import (
     EvaluationMetrics,
     evaluate_model,
 )
+from .loop import (
+    TrainingLoopError,
+    TrainingLoopResult,
+    run_training_loop,
+)
 from .optimizer import (
     OptimizerConfigError,
     OptimizerParameterGroups,
@@ -61,6 +66,8 @@ from .run_logging import (
     RunDirectoryError,
     RunPaths,
     initialize_run_directory,
+    open_existing_run_directory,
+    read_metric_events,
     validate_run_id,
 )
 from .state import (
@@ -114,6 +121,8 @@ __all__ = [
     "TrainingConfig",
     "TrainingConfigError",
     "TrainingDataStream",
+    "TrainingLoopError",
+    "TrainingLoopResult",
     "TrainingStepError",
     "UpdateMetrics",
     "ValidationDataStream",
@@ -125,9 +134,12 @@ __all__ = [
     "evaluate_model",
     "initialize_run_directory",
     "load_checkpoint",
+    "open_existing_run_directory",
     "partition_parameters",
+    "read_metric_events",
     "resolve_device",
     "restore_rng_state",
+    "run_training_loop",
     "save_checkpoint",
     "training_field_names",
     "validate_run_id",
