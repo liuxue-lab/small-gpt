@@ -12,6 +12,12 @@ from .optimizer import (
     build_optimizer,
     partition_parameters,
 )
+from .precision import (
+    DeviceResolutionError,
+    PrecisionConfigError,
+    PrecisionPolicy,
+    resolve_device,
+)
 from .scheduler import (
     SchedulerConfigError,
     SchedulerStateError,
@@ -24,22 +30,38 @@ from .state import (
     TrainerState,
     TrainerStateError,
 )
+from .trainer import (
+    BatchContractError,
+    NonFiniteTrainingError,
+    Trainer,
+    TrainingStepError,
+    UpdateMetrics,
+)
 
 __all__ = [
+    "BatchContractError",
+    "DeviceResolutionError",
+    "NonFiniteTrainingError",
     "OptimizerConfigError",
     "OptimizerParameterGroups",
+    "PrecisionConfigError",
+    "PrecisionPolicy",
     "ResolvedTrainingPlan",
     "SchedulerConfigError",
     "SchedulerStateError",
     "TRAINER_STATE_SCHEMA_VERSION",
+    "Trainer",
     "TrainerState",
     "TrainerStateError",
     "TrainingConfig",
     "TrainingConfigError",
+    "TrainingStepError",
+    "UpdateMetrics",
     "WarmupCosineScheduler",
     "build_optimizer",
     "build_scheduler",
     "partition_parameters",
+    "resolve_device",
     "training_field_names",
     "warmup_cosine_lr",
 ]
