@@ -1,6 +1,12 @@
 import pytest
 import torch
-from model import MLP, GPTConfig, TokenPositionEmbedding
+from model import (
+    MLP,
+    CausalSelfAttention,
+    GPTConfig,
+    TokenPositionEmbedding,
+    TransformerBlock,
+)
 from torch import nn
 
 
@@ -208,3 +214,111 @@ def test_mlp_rejects_non_floating_input():
 
     with pytest.raises(TypeError, match="floating-point"):
         mlp(torch.zeros((2, 4, 32), dtype=torch.long))
+
+
+def test_transformer_block_architecture_matches_pre_norm_contract():
+    config = tiny_config()
+    block = TransformerBlock(config)
+
+    assert isinstance(block.norm1, nn.LayerNorm)
+    assert isinstance(block.norm2, nn.LayerNorm)
+    assert block.norm1 is not block.norm2
+    assert block.norm1.normalized_shape == (config.n_embd,)
+    assert block.norm2.normalized_shape == (config.n_embd,)
+    assert block.norm1.eps == config.layer_norm_eps
+    assert block.norm2.eps == config.layer_norm_eps
+    assert block.norm1.elementwise_affine
+    assert block.norm2.elementwise_affine
+    assert isinstance(block.attention, CausalSelfAttention)
+    assert isinstance(block.mlp, MLP)
+
+
+def test_transformer_block_preserves_shape():
+    config = tiny_config()
+    block = TransformerBlock(config)
+    hidden_states = torch.randn(2, 7, config.n_embd)
+
+    output = block(hidden_states)
+
+    assert output.shape == hidden_states.shape
+    assert torch.isfinite(output).all()
+
+
+def test_transformer_block_uses_pre_norm_and_two_residual_paths():
+    config = tiny_config()
+    block = TransformerBlock(config)
+    events = []
+
+    class RecordingModule(nn.Module):
+        def __init__(self, name, transform):
+            super().__init__()
+            self.name = name
+            self.transform = transform
+
+        def forward(self, hidden_states):
+            events.append((self.name, hidden_states.detach().clone()))
+            return self.transform(hidden_states)
+
+    block.norm1 = RecordingModule("norm1", lambda value: value + 10.0)
+    block.attention = RecordingModule(
+        "attention",
+        lambda value: torch.full_like(value, 2.0),
+    )
+    block.norm2 = RecordingModule("norm2", lambda value: value + 20.0)
+    block.mlp = RecordingModule(
+        "mlp",
+        lambda value: torch.full_like(value, 3.0),
+    )
+    hidden_states = torch.randn(1, 3, config.n_embd)
+
+    output = block(hidden_states)
+
+    assert [name for name, _ in events] == [
+        "norm1",
+        "attention",
+        "norm2",
+        "mlp",
+    ]
+    torch.testing.assert_close(events[1][1], hidden_states + 10.0)
+    torch.testing.assert_close(events[2][1], hidden_states + 2.0)
+    torch.testing.assert_close(events[3][1], hidden_states + 22.0)
+    torch.testing.assert_close(output, hidden_states + 5.0)
+
+
+def test_zeroed_sublayers_make_transformer_block_identity():
+    config = tiny_config()
+    block = TransformerBlock(config).eval()
+    hidden_states = torch.randn(2, 6, config.n_embd)
+
+    with torch.no_grad():
+        for parameter in block.attention.parameters():
+            parameter.zero_()
+        for parameter in block.mlp.parameters():
+            parameter.zero_()
+
+    output = block(hidden_states)
+
+    torch.testing.assert_close(output, hidden_states, rtol=0, atol=0)
+
+
+def test_transformer_block_backward_reaches_all_parameters():
+    config = tiny_config()
+    block = TransformerBlock(config)
+    hidden_states = torch.randn(
+        2,
+        6,
+        config.n_embd,
+        requires_grad=True,
+    )
+
+    loss = block(hidden_states).square().mean()
+    loss.backward()
+
+    assert hidden_states.grad is not None
+    assert torch.isfinite(hidden_states.grad).all()
+    assert torch.count_nonzero(hidden_states.grad) > 0
+
+    for parameter in block.parameters():
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()
+        assert torch.count_nonzero(parameter.grad) > 0
