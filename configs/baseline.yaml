@@ -43,15 +43,26 @@ model:
 training:
   device: cuda
   precision: bf16
-  target_tokens: 300000000
   micro_batch_size: null
   gradient_accumulation_steps: null
+  max_steps: null
+  target_tokens: 300000000
   learning_rate: 0.0003
   min_learning_rate: 0.00003
   weight_decay: 0.1
   beta1: 0.9
   beta2: 0.95
+  adam_eps: 1.0e-8
+  warmup_steps: null
   warmup_ratio: 0.02
   gradient_clip: 1.0
+  log_interval: 10
   eval_interval: 500
+  eval_batches: 100
   save_interval: 1000
+  num_workers: null
+  pin_memory: null
+  deterministic: false
+  allow_tf32: true
+  run_dir: runs
+  checkpoint_dir: checkpoints

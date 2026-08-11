@@ -38,9 +38,23 @@ training:
   micro_batch_size: 4
   gradient_accumulation_steps: 1
   max_steps: 200
+  target_tokens: null
   learning_rate: 0.0003
+  min_learning_rate: 0.00003
   weight_decay: 0.1
+  beta1: 0.9
+  beta2: 0.95
+  adam_eps: 1.0e-8
   warmup_steps: 20
+  warmup_ratio: null
   gradient_clip: 1.0
+  log_interval: 10
   eval_interval: 20
+  eval_batches: 20
   save_interval: 100
+  num_workers: 0
+  pin_memory: false
+  deterministic: true
+  allow_tf32: false
+  run_dir: runs
+  checkpoint_dir: checkpoints
