@@ -19,6 +19,7 @@ tokenizer:
     - "<unk>"
 
 model:
+  architecture: decoder_only_gpt
   n_layer: 8
   n_head: 8
   n_embd: 512
@@ -28,8 +29,16 @@ model:
   dropout: 0.0
   tie_embeddings: true
   normalization: layernorm
+  norm_position: pre
+  layer_norm_eps: 1.0e-5
   activation: gelu
-  position_encoding: learned
+  gelu_approximate: tanh
+  position_encoding: learned_absolute
+  linear_bias: false
+  lm_head_bias: false
+  layer_norm_affine: true
+  init_std: 0.02
+  scale_residual_projections: true
 
 training:
   device: cuda

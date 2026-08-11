@@ -11,6 +11,7 @@ tokenizer:
   vocab_size: 16384
 
 model:
+  architecture: decoder_only_gpt
   n_layer: 2
   n_head: 2
   n_embd: 128
@@ -19,6 +20,17 @@ model:
   vocab_size: 16384
   dropout: 0.0
   tie_embeddings: true
+  normalization: layernorm
+  norm_position: pre
+  layer_norm_eps: 1.0e-5
+  activation: gelu
+  gelu_approximate: tanh
+  position_encoding: learned_absolute
+  linear_bias: false
+  lm_head_bias: false
+  layer_norm_affine: true
+  init_std: 0.02
+  scale_residual_projections: true
 
 training:
   device: auto

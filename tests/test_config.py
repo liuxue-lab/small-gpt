@@ -1,43 +1,14 @@
 import math
-from pathlib import Path
+from copy import deepcopy
 
-import yaml
+import pytest
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CONFIG_DIRECTORY = PROJECT_ROOT / "configs"
-
-
-def load_config(filename: str) -> dict:
-    config_path = CONFIG_DIRECTORY / filename
-
-    with config_path.open("r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
-
-
-def estimate_parameters(config: dict) -> int:
-    model = config["model"]
-
-    token_embedding = model["vocab_size"] * model["n_embd"]
-    position_embedding = model["context_length"] * model["n_embd"]
-    transformer_blocks = (
-        model["n_layer"]
-        * 12
-        * model["n_embd"]
-        * model["n_embd"]
-    )
-
-    output_head = 0
-
-    if not model["tie_embeddings"]:
-        output_head = model["vocab_size"] * model["n_embd"]
-
-    return (
-        token_embedding
-        + position_embedding
-        + transformer_blocks
-        + output_head
-    )
+from scripts.check_config import (
+    EXPECTED_PARAMETER_COUNTS,
+    estimate_parameters,
+    load_config,
+    validate_config,
+)
 
 
 def test_debug_model_dimensions():
@@ -52,7 +23,7 @@ def test_debug_model_dimensions():
     assert model["n_embd"] % model["n_head"] == 0
 
 
-def test_baseline_model_dimensions_and_size():
+def test_baseline_model_dimensions():
     config = load_config("baseline.yaml")
     model = config["model"]
 
@@ -63,6 +34,39 @@ def test_baseline_model_dimensions_and_size():
     assert model["context_length"] == 512
     assert model["n_embd"] % model["n_head"] == 0
 
+
+@pytest.mark.parametrize("filename", ("debug.yaml", "baseline.yaml"))
+def test_model_architecture_contract(filename):
+    model = load_config(filename)["model"]
+
+    assert model["architecture"] == "decoder_only_gpt"
+    assert model["normalization"] == "layernorm"
+    assert model["norm_position"] == "pre"
+    assert model["layer_norm_eps"] == pytest.approx(1.0e-5)
+    assert model["activation"] == "gelu"
+    assert model["gelu_approximate"] == "tanh"
+    assert model["position_encoding"] == "learned_absolute"
+    assert model["dropout"] == 0.0
+    assert model["linear_bias"] is False
+    assert model["lm_head_bias"] is False
+    assert model["layer_norm_affine"] is True
+    assert model["tie_embeddings"] is True
+    assert model["init_std"] == pytest.approx(0.02)
+    assert model["scale_residual_projections"] is True
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    tuple(EXPECTED_PARAMETER_COUNTS.items()),
+)
+def test_exact_parameter_count(filename, expected):
+    config = load_config(filename)
+
+    assert estimate_parameters(config) == expected
+
+
+def test_baseline_parameter_count_is_about_34m():
+    config = load_config("baseline.yaml")
     parameter_count = estimate_parameters(config)
 
     assert 30_000_000 <= parameter_count <= 40_000_000
@@ -88,4 +92,35 @@ def test_tokenizer_and_model_vocabulary_match():
         tokenizer_vocab_size = config["tokenizer"]["vocab_size"]
         model_vocab_size = config["model"]["vocab_size"]
 
-        assert tokenizer_vocab_size == model_vocab_size
+        assert tokenizer_vocab_size == model_vocab_size == 16_384
+
+
+@pytest.mark.parametrize("filename", ("debug.yaml", "baseline.yaml"))
+def test_full_config_validation_passes(filename):
+    config = load_config(filename)
+
+    validate_config(filename, config)
+
+
+def test_validation_rejects_incompatible_head_dimensions():
+    config = deepcopy(load_config("debug.yaml"))
+    config["model"]["n_head"] = 3
+
+    with pytest.raises(ValueError, match="n_embd must be divisible"):
+        validate_config("debug.yaml", config)
+
+
+def test_validation_rejects_unknown_model_field():
+    config = deepcopy(load_config("debug.yaml"))
+    config["model"]["positon_encoding"] = "learned_absolute"
+
+    with pytest.raises(ValueError, match="unknown fields"):
+        validate_config("debug.yaml", config)
+
+
+def test_validation_rejects_architecture_drift():
+    config = deepcopy(load_config("debug.yaml"))
+    config["model"]["linear_bias"] = True
+
+    with pytest.raises(ValueError, match="linear_bias"):
+        validate_config("debug.yaml", config)
