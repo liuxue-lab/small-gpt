@@ -296,3 +296,31 @@ def test_evaluation_dataloader_keeps_complete_dataset_tail_batch(tmp_path):
     finally:
         store.close()
 
+
+def test_explicit_loader_generator_isolates_global_torch_rng(tmp_path):
+    manifest_path, _streams = _write_dataset_fixture(tmp_path)
+    store = SplitTokenStore(manifest_path, "train")
+    try:
+        dataset = CausalWindowDataset(store, 4, mode="sequential")
+        generator = torch.Generator().manual_seed(1234)
+        loader = build_dataloader(
+            dataset,
+            batch_size=2,
+            generator=generator,
+            num_workers=0,
+            pin_memory=False,
+            drop_last=False,
+        )
+        before = torch.get_rng_state().clone()
+
+        _batch = next(iter(loader))
+
+        assert torch.equal(torch.get_rng_state(), before)
+        with pytest.raises(DatasetContractError, match="generator"):
+            build_dataloader(
+                dataset,
+                batch_size=2,
+                generator=object(),
+            )
+    finally:
+        store.close()

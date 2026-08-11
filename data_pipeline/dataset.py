@@ -440,6 +440,7 @@ def build_dataloader(
     *,
     batch_size: int,
     sampler: Sampler[int] | None = None,
+    generator: torch.Generator | None = None,
     num_workers: int = 0,
     pin_memory: bool = False,
     drop_last: bool = False,
@@ -452,6 +453,8 @@ def build_dataloader(
         raise DatasetContractError("batch_size must be a positive integer")
     if isinstance(num_workers, bool) or not isinstance(num_workers, int) or num_workers < 0:
         raise DatasetContractError("num_workers must be a non-negative integer")
+    if generator is not None and not isinstance(generator, torch.Generator):
+        raise DatasetContractError("generator must be a torch.Generator or null")
     if not isinstance(pin_memory, bool) or not isinstance(drop_last, bool):
         raise DatasetContractError("pin_memory and drop_last must be boolean")
     if not isinstance(persistent_workers, bool):
@@ -470,6 +473,7 @@ def build_dataloader(
         "batch_size": batch_size,
         "shuffle": False,
         "sampler": sampler,
+        "generator": generator,
         "num_workers": num_workers,
         "pin_memory": pin_memory,
         "drop_last": drop_last,

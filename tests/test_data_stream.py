@@ -362,6 +362,28 @@ def test_evaluation_does_not_change_the_next_training_batch(tmp_path):
     assert torch.equal(actual_next[1], expected_next[1])
 
 
+def test_train_and_validation_loaders_do_not_advance_global_torch_rng(tmp_path):
+    manifest_path, _ = write_tokenized_fixture(tmp_path)
+    config = stream_config()
+    plan = config.resolve()
+    torch.manual_seed(9876)
+    before = torch.get_rng_state().clone()
+
+    with TrainingDataStream(
+        manifest_path,
+        config=config,
+        plan=plan,
+        state=TrainerState(run_id="rng-isolation"),
+    ) as training, ValidationDataStream(
+        manifest_path,
+        plan=plan,
+    ) as validation:
+        _training_batch = next(training)
+        _validation_batch = next(iter(validation))
+
+    assert torch.equal(torch.get_rng_state(), before)
+
+
 def test_training_stream_closes_store_on_exception(tmp_path):
     manifest_path, _ = write_tokenized_fixture(tmp_path)
     config = stream_config()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator
 from itertools import islice
 from pathlib import Path
@@ -62,6 +63,16 @@ def _shutdown_loader_iterator(iterator: object | None) -> None:
     shutdown = getattr(iterator, "_shutdown_workers", None)
     if callable(shutdown):
         shutdown()
+
+
+def _loader_generator(*, base_seed: int, stream_name: str) -> torch.Generator:
+    digest = hashlib.sha256(
+        f"small-gpt-loader:{stream_name}:{base_seed}".encode("ascii")
+    ).digest()
+    seed = int.from_bytes(digest[:8], "little") & ((1 << 63) - 1)
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+    return generator
 
 
 class TrainingDataStream(
@@ -162,10 +173,15 @@ class TrainingDataStream(
                 base_sampler,
                 offset=state.samples_consumed,
             )
+            loader_generator = _loader_generator(
+                base_seed=config.seed,
+                stream_name="train",
+            )
             loader = build_dataloader(
                 dataset,
                 batch_size=plan.micro_batch_size,
                 sampler=sampler,
+                generator=loader_generator,
                 num_workers=plan.num_workers,
                 pin_memory=plan.pin_memory,
                 drop_last=True,
@@ -181,6 +197,7 @@ class TrainingDataStream(
         self.dataset = dataset
         self.base_sampler = base_sampler
         self.sampler = sampler
+        self.loader_generator = loader_generator
         self.loader: DataLoader[Any] = loader
         self._iterator = iterator
 
@@ -258,9 +275,14 @@ class ValidationDataStream:
                 plan.context_length,
                 mode="sequential",
             )
+            loader_generator = _loader_generator(
+                base_seed=plan.seed,
+                stream_name="validation",
+            )
             loader = build_dataloader(
                 dataset,
                 batch_size=plan.micro_batch_size,
+                generator=loader_generator,
                 num_workers=plan.num_workers,
                 pin_memory=plan.pin_memory,
                 drop_last=False,
@@ -273,6 +295,7 @@ class ValidationDataStream:
 
         self.store = store
         self.dataset = dataset
+        self.loader_generator = loader_generator
         self.loader: DataLoader[Any] = loader
 
     @property
