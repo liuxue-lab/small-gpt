@@ -8,8 +8,8 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 当前阶段 | Day 6 已完成，下一阶段为训练循环、优化器与 checkpoint |
-| 自动测试 | 216 项测试通过 |
+| 当前阶段 | Day 7 本地训练系统已完成，下一阶段为 AutoDL/Baseline 资源定标 |
+| 自动测试 | Day 1～Day 7 完整回归 `508 passed in 13.49s` |
 | 数据集 | `HuggingFaceFW/fineweb-edu` / `sample-10BT` |
 | 数据访问方式 | 固定 revision 的流式读取 |
 | 数据管线 | 支持清洗、去重、划分、分片、恢复与完整性校验 |
@@ -21,6 +21,9 @@
 | Dataset/DataLoader | 跨 shard memory-map、因果 `T+1` 窗口和 Windows workers 已验证 |
 | GPT 模型 | 手写 Decoder-only GPT；Debug 2,508,032 参数，Baseline 33,833,984 参数 |
 | 模型诊断 | Synthetic/Pilot CUDA 前后向与固定批次过拟合均已通过 |
+| 训练系统 | AdamW、warmup/cosine、FP32/BF16、validation、JSONL、原子 checkpoint 与 strict resume 已完成 |
+| Debug 训练 | Pilot 上 200 updates / 102,400 tokens；10 次验证；2 个 checkpoint；全程 finite |
+| 恢复验证 | 下一 batch/LR/RNG 精确恢复；模型与 optimizer 在冻结 CUDA FP32 tolerance 内一致 |
 | 正式语料 | 计划采集 350M provided tokens，尚未执行 |
 | Git 分支 | `main` |
 
@@ -219,6 +222,51 @@ CUDA 运行验证：
 
 自动测试还覆盖 Attention 与整模因果隔离、weight tying 的对象和 storage 共享、optimizer 参数去重、初始化复现、连续两次 backward，以及 strict state dict round-trip。完整项目回归为 `216 passed in 9.94s`。
 
+## Day 7 单卡训练系统结果
+
+Day 7 在已冻结的 tokenized Pilot、因果 `x/y` 和 Decoder-only GPT 之上，实现了可验证、可记录、可中断恢复的正式单卡训练系统。
+
+| 组件 | 冻结实现 |
+| --- | --- |
+| Training config | 严格字段、预算/warmup 互斥、完整 update token 预算 |
+| Optimizer | AdamW；按参数维度分 decay/no-decay；tied Parameter 去重 |
+| Scheduler | 20-update linear warmup + cosine decay，按 optimizer update 推进 |
+| Update | accumulation、loss/N、finite checks、global grad-norm clip |
+| Precision | FP32 与 CUDA BF16；BF16 autocast，不使用 GradScaler |
+| Validation | sequential 非重叠窗口、token-weighted loss、固定 batch 数 |
+| Logging | JSONL metrics、resolved config、run metadata、run-id 防覆盖 |
+| Checkpoint | schema v1、原子保存、strict identity validation |
+| Resume | model/optimizer/scheduler/trainer/RNG/data cursor 完整恢复 |
+| CLI | dry-run、Pilot/synthetic、stop gate、显式 checkpoint resume |
+
+Debug 模型在真实 tokenized Pilot 上完成 200 次 optimizer updates：
+
+| 指标 | 结果 |
+| --- | ---: |
+| Model parameters | 2,508,032 |
+| Device / precision | `cuda:0` / FP32 |
+| Micro batch / context / accumulation | 4 / 128 / 1 |
+| Tokens/update | 512 |
+| Total updates / tokens | 200 / 102,400 |
+| Initial / final train loss | 9.722784 / 7.447512 |
+| First / final validation loss | 9.329641 / 7.517156 |
+| First / final perplexity | 11,267.09 / 1,839.33 |
+| Evaluation events | 10，每次 10,240 tokens |
+| Checkpoints | step 100、step 200，各 30,138,029 bytes |
+| Non-finite train/eval events | 0 / 0 |
+
+CUDA BF16 5-step smoke 同样通过：autocast 已启用、GradScaler 未启用，5 个 train events 的 loss 和 grad norm 全部有限，并成功保存 step 5 checkpoint。
+
+Checkpoint/resume 对照证明下一训练 batch、下一学习率、scheduler state 与 Python/NumPy/Torch RNG 可以恢复；模型和 optimizer continuation 在冻结的 CUDA FP32 tolerance 内一致。正式 CLI 的 step 5 → step 10 resume 在 step 10 得到与连续运行完全一致的 loss `9.656713485717773`。
+
+Day 7 最终专项门为 `147 passed in 6.17s`，Day 1～Day 7 完整项目回归为：
+
+```text
+508 passed in 13.49s
+```
+
+以上仅证明 Debug/Pilot 训练工程闭环成立，不代表 33,833,984 参数 Baseline 已完成预训练。AutoDL、350M Full 语料和 300M-token 正式训练仍未启动。
+
 ## 数据管线能力
 
 `scripts/build_fineweb_edu_corpus.py` 已实现：
@@ -314,7 +362,55 @@ python .\scripts\inspect_model.py `
   --backward
 ```
 
-`scripts/inspect_model.py` 还提供 `--overfit-steps`，用于让 Debug 模型诊断性地过拟合同一个固定 batch。该模式不会保存权重，也不替代 Day 7 的正式训练系统。
+`scripts/inspect_model.py` 还提供 `--overfit-steps`，用于让 Debug 模型诊断性地过拟合同一个固定 batch。该模式不会保存权重，也不替代正式训练入口。
+
+## 正式训练入口
+
+在不写日志或 checkpoint 的情况下检查完整 Debug/Pilot 组件：
+
+```powershell
+python .\scripts\train_gpt.py `
+  --config .\configs\debug.yaml `
+  --manifest .\data\tokenized\fineweb_edu_pilot\manifest.json `
+  --run-id debug-dry-run `
+  --device cuda `
+  --precision fp32 `
+  --batch-source pilot `
+  --num-workers 0 `
+  --dry-run
+```
+
+按照 `debug.yaml` 运行完整 200-update Debug 训练：
+
+```powershell
+python .\scripts\train_gpt.py `
+  --config .\configs\debug.yaml `
+  --manifest .\data\tokenized\fineweb_edu_pilot\manifest.json `
+  --run-id debug-pilot-200 `
+  --device cuda `
+  --precision fp32 `
+  --batch-source pilot `
+  --num-workers 0
+```
+
+从显式 checkpoint 恢复到同一 scheduler horizon 的后续 stop gate：
+
+```powershell
+python .\scripts\train_gpt.py `
+  --config .\configs\debug.yaml `
+  --manifest .\data\tokenized\fineweb_edu_pilot\manifest.json `
+  --run-id debug-resume `
+  --device cuda `
+  --precision fp32 `
+  --batch-source pilot `
+  --stop-at-step 20 `
+  --num-workers 0 `
+  --resume .\checkpoints\debug-resume\step-00000010.pt
+```
+
+`--stop-at-step` 只控制当前进程的停止位置，不修改 YAML 中的总训练步数或学习率曲线。新运行拒绝覆盖已有 run-id；resume 必须使用相同的 resolved config、模型、Tokenizer 和 dataset identity。
+
+运行指标写入 `runs/<run-id>/metrics.jsonl`，checkpoint 写入 `checkpoints/<run-id>/`。两类运行产物均由 Git 忽略。
 
 ## 开发与训练分工
 
@@ -351,7 +447,7 @@ python -m pytest -q
 当前完整测试结果：
 
 ```text
-216 passed in 9.94s
+508 passed in 13.49s
 ```
 
 测试范围包括：
@@ -374,7 +470,14 @@ python -m pytest -q
 - Embedding、GELU MLP、Pre-LN Block 和手写 causal self-attention；
 - Attention 概率、因果 mask、未来信息隔离与 FP32 softmax；
 - GPT logits/loss、无二次 shift、weight tying 和初始化；
-- 全模型梯度、optimizer 去重、固定 seed 与 state dict round-trip。
+- 全模型梯度、optimizer 去重、固定 seed 与 state dict round-trip；
+- 严格训练配置、update/token budget 与 Baseline unresolved 资源拒绝；
+- AdamW 参数分组、tied alias 去重与 warmup/cosine 边界；
+- gradient accumulation、finite checks、梯度裁剪与 FP32/BF16 precision policy；
+- 确定性训练数据流、固定 validation 和 token-weighted loss；
+- JSONL 日志、run-id 防覆盖、resolved config 与 resume 日志校验；
+- checkpoint schema、原子保存、identity mismatch 拒绝与 RNG/data cursor 恢复；
+- 正式训练循环的 log/eval/save interval、final checkpoint 与 CLI 行为。
 
 ## 项目结构
 
@@ -413,32 +516,52 @@ small-gpt/
 │   ├── day-05-tokenized-data-design.md
 │   ├── day-05-tokenized-data-stats.json
 │   ├── day-06-execution-report.md
-│   └── day-06-model-design.md
+│   ├── day-06-model-design.md
+│   ├── day-07-execution-report.md
+│   └── day-07-training-system-design.md
 ├── scripts/
 │   ├── build_fineweb_edu_corpus.py
+│   ├── check_checkpoint_resume.py
 │   ├── check_config.py
 │   ├── check_env.py
+│   ├── check_training_config.py
+│   ├── check_training_core.py
+│   ├── check_training_pipeline.py
+│   ├── check_training_update.py
 │   ├── evaluate_tokenizer.py
 │   ├── inspect_dataset.py
 │   ├── inspect_model.py
 │   ├── inspect_tokenized_data.py
 │   ├── prepare_data.py
 │   ├── tokenize_corpus.py
+│   ├── train_gpt.py
 │   └── train_tokenizer.py
 ├── tests/
 │   ├── test_attention.py
 │   ├── test_binary_format.py
+│   ├── test_checkpoint.py
 │   ├── test_config.py
 │   ├── test_data_config.py
 │   ├── test_data_pipeline.py
+│   ├── test_data_stream.py
 │   ├── test_dataset.py
 │   ├── test_environment.py
+│   ├── test_evaluation.py
 │   ├── test_layers.py
 │   ├── test_model.py
 │   ├── test_model_config.py
+│   ├── test_optimizer.py
+│   ├── test_precision.py
+│   ├── test_run_logging.py
+│   ├── test_scheduler.py
 │   ├── test_streaming_data_pipeline.py
 │   ├── test_tokenization.py
-│   └── test_tokenizer.py
+│   ├── test_tokenizer.py
+│   ├── test_train_gpt.py
+│   ├── test_trainer.py
+│   ├── test_trainer_state.py
+│   ├── test_training_config.py
+│   └── test_training_loop.py
 ├── tokenizer/
 │   ├── artifacts/
 │   │   ├── merges.txt
@@ -447,7 +570,19 @@ small-gpt/
 │   │   └── vocab.json
 │   ├── __init__.py
 │   └── bpe.py
-├── train/                         # 数据加载、训练循环和 checkpoint
+├── train/
+│   ├── __init__.py               # 稳定训练系统公共 API
+│   ├── checkpoint.py             # 原子 checkpoint 与 strict resume
+│   ├── config.py                 # 严格训练配置与 resolved plan
+│   ├── data_stream.py            # 可恢复训练流与固定验证流
+│   ├── evaluation.py             # token-weighted validation
+│   ├── loop.py                   # log/eval/save interval 主循环
+│   ├── optimizer.py              # AdamW 参数分组
+│   ├── precision.py              # FP32 / CUDA BF16 policy
+│   ├── run_logging.py            # run 目录与 JSONL 指标
+│   ├── scheduler.py              # warmup + cosine
+│   ├── state.py                  # trainer counters
+│   └── trainer.py                # accumulated optimizer update
 ├── .gitignore
 ├── README.md
 └── requirements.txt
@@ -461,7 +596,7 @@ small-gpt/
 - [x] Day 4：训练、保存并验证 16K ByteLevel BPE Tokenizer
 - [x] Day 5：构建 tokenized binary、文档索引、Dataset 和 DataLoader
 - [x] Day 6：手写 Causal Self-Attention、Decoder-only GPT 并完成模型验收
-- [ ] Day 7：实现训练循环、优化器、调度器、评估与 checkpoint 恢复
+- [x] Day 7：实现训练循环、优化器、调度器、评估、日志与 checkpoint 恢复
 - [ ] 采集并验证正式训练语料
 - [ ] 在租用 GPU 上完成正式预训练
 - [ ] 实现文本生成与模型评估
@@ -482,11 +617,13 @@ small-gpt/
 - [Day 5 Tokenized Data 统计](reports/day-05-tokenized-data-stats.json)
 - [Day 6 模型设计](reports/day-06-model-design.md)
 - [Day 6 执行报告](reports/day-06-execution-report.md)
+- [Day 7 训练系统设计](reports/day-07-training-system-design.md)
+- [Day 7 执行报告](reports/day-07-execution-report.md)
 
 ## 当前阶段
 
-Day 6 已完成。项目现在具备一套从矩阵运算开始手写的 Decoder-only GPT：Pre-LN、learned absolute position、causal multi-head self-attention、GELU MLP、final LayerNorm、tied LM head 和 GPT 风格初始化均已实现。Debug 与 Baseline 精确参数量分别为 2,508,032 和 33,833,984。
+Day 7 本地训练系统已完成。项目现在能够从真实 tokenized FineWeb-Edu Pilot 构建确定性训练 batch，驱动手写 Decoder-only GPT 完成 AdamW 更新、warmup/cosine 调度、FP32/BF16 计算、validation、JSONL 日志、原子 checkpoint 和 strict resume。
 
-113 个模型专项测试和 216 项完整回归全部通过。Debug 模型已在本地 CUDA 上完成 synthetic 与真实 tokenized Pilot 前后向，固定 batch loss 在 200 steps 内由 `9.704769` 降至 `0.003591`，证明数据对齐、因果 loss、梯度与参数更新闭环成立。
+2,508,032 参数 Debug 模型已在本地 `cuda:0` 上完成 200 updates / 102,400 tokens 的真实 Pilot 训练。train loss 从 `9.722784` 降至 `7.447512`，十个 validation 点从 `9.329641` 持续降至 `7.517156`；BF16 smoke、step 5 → step 10 正式 resume、下一 batch/LR/RNG 恢复和两个 interval checkpoint 均通过验收。Day 1～Day 7 完整回归为 `508 passed in 13.49s`。
 
-下一阶段将实现正式训练循环、AdamW 参数分组、学习率调度、gradient accumulation、混合精度、validation 和 checkpoint 原子保存/恢复，并继续先用 Debug 配置验收。350M Full 语料与正式 GPU 预训练仍未启动，AutoDL 继续保持关机。
+下一阶段将在用户明确授权后进入 AutoDL/Baseline 资源定标：先探测 micro-batch、gradient accumulation、workers、显存和吞吐，再执行短 BF16/checkpoint smoke。350M Full 语料和 300M-token 正式预训练仍未启动，当前 Debug/Pilot 结果不能作为 Baseline 模型质量结论。

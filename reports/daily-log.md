@@ -935,3 +935,337 @@ FineWeb-Edu Pilot
 - 使用 Debug 模型完成短训练、中断和恢复一致性测试；
 - 全部通过后再准备 Baseline 与租用 GPU；
 - 350M Full 数据与正式预训练仍需独立验收后启动。
+
+## Day 7：单卡训练系统、Checkpoint 与精确恢复
+
+### 日期
+
+2026-08-11～2026-08-12
+
+### 今日目标
+
+在 Day 5 tokenized data 与 Day 6 Decoder-only GPT 的冻结契约上，实现一套可以用于后续正式预训练的单卡训练系统，并用本地 Debug 模型完成以下闭环：
+
+1. 严格训练配置与 step/token 计数；
+2. AdamW 参数分组与 warmup/cosine scheduler；
+3. gradient accumulation、裁剪、有限值检查和 FP32/BF16；
+4. 确定性训练数据流与固定 validation；
+5. JSONL 日志、resolved config 和 run metadata；
+6. 原子 checkpoint 与 model/optimizer/scheduler/RNG/data cursor 恢复；
+7. 正式训练 CLI、dry-run、stop gate 和显式 resume；
+8. Pilot 200-update Debug 训练与 Day 1～Day 7 完整回归。
+
+Day 7 不启动 AutoDL，不构建 Full，不执行 33,833,984 参数 Baseline 的长时间训练。
+
+### 冻结的训练计数
+
+| 概念 | 定义 |
+| --- | --- |
+| Micro-step | 一个 micro-batch 的 forward + backward |
+| Optimizer update | 累积完成后的一次 optimizer step |
+| Global step | 已成功完成的 optimizer updates |
+| Interval step | log/eval/save 均以 optimizer update 计数 |
+
+Debug 计划：
+
+```text
+micro batch 4 × context 128 × accumulation 1
+= 512 tokens/update
+
+512 × 200 updates
+= 102,400 tokens
+```
+
+### 已完成任务
+
+- [x] 严格解析 Debug 与 Baseline training fields
+- [x] 实现 max-steps/target-tokens 与 warmup-steps/ratio 互斥
+- [x] 保持 Baseline 资源字段 unresolved，不进行本地猜测
+- [x] 实现 TrainerState schema v1
+- [x] 按 Parameter identity 去重 tied weights
+- [x] 构建 AdamW decay/no-decay groups
+- [x] 实现 linear warmup + cosine decay
+- [x] 实现 accumulation、loss/N、finite checks 和 grad clipping
+- [x] 实现具体 CUDA device resolution
+- [x] 实现 FP32 与 CUDA BF16 precision policy
+- [x] 实现可恢复 train data stream 与固定 validation stream
+- [x] 实现 token-weighted validation loss/perplexity
+- [x] 实现 JSONL metric logger 和 run directory 防覆盖
+- [x] 实现 schema v1 原子 checkpoint
+- [x] 保存并恢复模型、optimizer、scheduler、trainer state 和 RNG
+- [x] 保存并恢复数据 sample cursor
+- [x] 实现 checkpoint identity 与 strict mismatch rejection
+- [x] 实现正式 interval training loop
+- [x] 实现 `scripts/train_gpt.py`
+- [x] 完成 dry-run、1/3/20/200-update Pilot gates
+- [x] 完成 BF16 5-step smoke
+- [x] 完成 continuous vs resume 一致性测试
+- [x] 完成正式 CLI step 5 → step 10 resume
+- [x] 完成 147 项最终核心专项测试
+- [x] 完成 508 项全项目回归
+- [x] 确认 runs/checkpoints 未进入 Git
+
+### Training config 结果
+
+Debug：
+
+| 项目 | 结果 |
+| --- | ---: |
+| Execution ready | true |
+| Tokens/micro-step | 512 |
+| Tokens/update | 512 |
+| Total updates | 200 |
+| Warmup updates | 20 |
+| Planned tokens | 102,400 |
+| Token overshoot | 0 |
+
+Baseline 静态解析通过，但以下资源字段保持 unresolved：
+
+```text
+micro_batch_size
+gradient_accumulation_steps
+num_workers
+pin_memory
+```
+
+因此 Baseline `execution_ready=False`，Day 7 不允许直接启动。
+
+### Optimizer 与 Scheduler
+
+Debug 2,508,032 个参数被分为：
+
+| Group | Tensors | Parameters |
+| --- | ---: | ---: |
+| Decay | 10 | 2,506,752 |
+| No-decay | 10 | 1,280 |
+
+`token_embedding.weight` 与 `lm_head.weight` 是 tied aliases，没有重复进入 optimizer。
+
+LR 关键边界：
+
+| Update index | LR |
+| ---: | ---: |
+| 0 | 0.000015 |
+| 19 | 0.000300 |
+| 20 | 0.000300 |
+| 199 | 0.000030 |
+
+### Precision 与单次 Update
+
+Synthetic FP32 update 在 `cuda:0` 上通过：
+
+| 指标 | 结果 |
+| --- | ---: |
+| Update index | 0 |
+| Completed global step | 1 |
+| Loss | 9.732769 |
+| Learning rate | 0.000015 |
+| Grad norm before clip | 1.261182 |
+| Samples / tokens | 4 / 512 |
+| Parameter changed | true |
+
+BF16 使用 CUDA autocast，不使用 GradScaler；FP16 不在 Day 7 范围内。
+
+### 数据、验证与日志
+
+- train 使用 `all_starts` + deterministic random sampler；
+- validation 使用 `sequential` non-overlapping windows；
+- DataLoader 使用独立派生 generator，避免改变全局 Torch RNG；
+- evaluation 不推进训练 sampler 或 data cursor；
+- validation loss 按 token 加权；
+- 每次运行保存 `metrics.jsonl`、`resolved-config.yaml` 和 `run-metadata.json`；
+- resume 前严格检查已有日志不能领先于 checkpoint。
+
+首次真实 3-step pipeline：
+
+| Step | Train loss | LR |
+| ---: | ---: | ---: |
+| 1 | 9.722784 | 0.000015 |
+| 2 | 9.745681 | 0.000030 |
+| 3 | 9.725891 | 0.000045 |
+
+step 3 validation 使用 1,024 tokens，loss 为 `9.711104`，perplexity 为 `16,499.814097`。
+
+### Checkpoint 与 Resume
+
+核心 CUDA FP32 对照运行：
+
+```text
+continuous 4 updates
+vs.
+2 updates → save → reload into new objects → 2 updates
+```
+
+结果：
+
+- checkpoint `step-00000002.pt` 原子写入成功；
+- 恢复 global step 2、tokens 1,024；
+- 下一 batch exact；
+- 下一 LR `4.5e-05`；
+- scheduler state exact；
+- Python/NumPy/Torch RNG exact；
+- continuation metrics、model 和 optimizer 在 `rtol=1e-6, atol=1e-7` 内一致；
+- 最终 global step 4、tokens 2,048。
+
+正式 CLI 的 step 5 → step 10 resume 还验证了：
+
+- data batches/samples 恢复为 5 / 20；
+- step 10 loss `9.656713485717773` 与连续运行同一步完全相同；
+- JSONL 事件连续追加，没有重复 train steps；
+- step 5 与 step 10 checkpoint 均保留。
+
+### BF16 Pilot smoke
+
+运行 ID：`day07-debug-pilot-bf16-step5`。
+
+| 项目 | 结果 |
+| --- | --- |
+| Device / precision | `cuda:0` / `bf16` |
+| Autocast / GradScaler | true / false |
+| Updates / tokens | 5 / 2,560 |
+| Initial / final loss | 9.723145 / 9.727051 |
+| Non-finite events | 0 |
+| Wrong policy events | 0 |
+| Checkpoint | `step-00000005.pt`，30,138,029 bytes |
+
+该 smoke 只验证数值路径与状态系统，不要求 5 个随机 batch 的 loss 单调下降。
+
+### 完整 200-update Debug/Pilot 运行
+
+运行 ID：`day07-debug-pilot-200`。
+
+| 指标 | 结果 |
+| --- | ---: |
+| Device / precision | `cuda:0` / FP32 |
+| Updates / tokens | 200 / 102,400 |
+| JSONL events | 213 |
+| Initial train loss | 9.7227840423584 |
+| Final train loss | 7.44751167297363 |
+| Train loss reduction | 23.40% |
+| Initial validation loss | 9.32964119911194 |
+| Final validation loss | 7.51715626716614 |
+| Validation loss reduction | 19.43% |
+| Initial perplexity | 11,267.0881 |
+| Final perplexity | 1,839.3293 |
+| Perplexity reduction | 83.68% |
+| Evaluations | 10 |
+| Checkpoints | 2 |
+| Non-finite train/eval events | 0 / 0 |
+
+梯度范数记录的是裁剪前数值：minimum `0.664668`、maximum `3.552653`、mean `1.017803`。
+
+吞吐日志：
+
+| 指标 | tokens/s |
+| --- | ---: |
+| Aggregate update throughput | 62,137.05 |
+| Steady-state step 2～200 | 73,061.11 |
+| Minimum / maximum update | 2,020.43 / 89,516.75 |
+
+该吞吐不包含 validation、checkpoint 和完整进程开销，不能外推为 Baseline 正式吞吐。
+
+Validation 在 step 20、40、60、80、100、120、140、160、180、200 执行，loss 依次为：
+
+```text
+9.329641
+8.760921
+8.303771
+7.986725
+7.774237
+7.652070
+7.588548
+7.552096
+7.531419
+7.517156
+```
+
+检查点：
+
+```text
+step-00000100.pt  30,138,029 bytes
+step-00000200.pt  30,138,029 bytes
+```
+
+### 测试结果
+
+最终核心专项门：
+
+```text
+147 passed in 6.17s
+PowerShell outer elapsed: 7.91s
+```
+
+Day 1～Day 7 完整回归：
+
+```text
+508 passed in 13.49s
+PowerShell outer elapsed: 15.26s
+Exit code: 0
+Skipped: 0
+```
+
+完整回归后 `git status --porcelain` 条目数为 0。
+
+### Day 7 代码提交
+
+| Commit | 内容 |
+| --- | --- |
+| `d679642` | `feat: add strict training configuration contract` |
+| `2ee8a8a` | `feat: add training state AdamW and cosine scheduler` |
+| `8391b28` | `feat: add accumulated training updates and precision` |
+| `2bca55d` | `feat: add deterministic data evaluation and logging` |
+| `7e80569` | `feat: add atomic checkpoint and exact resume` |
+| `c01c087` | `feat: add formal training entry and interval loop` |
+
+### 关键问题与处理
+
+1. Scheduler 测试最初错误地把 post-warmup minimum LR 当成 warmup 下界；修正测试 phase 语义，没有修改正确的 warmup 公式；
+2. 抽象 `torch.device("cuda")` 与实际参数设备 `cuda:0` 比较不一致；device resolution 改为具体当前 CUDA index；
+3. DataLoader 构造可能消耗全局 Torch RNG；增加独立 loader generator，保证 resume RNG 轨迹；
+4. Python 构造器不能直接粘贴到 PowerShell；后续通过脚本或 PyTest 执行；
+5. `LF will be replaced by CRLF` 只是 Windows 换行提示，仍通过 `git diff --check` 检查真实空白错误；
+6. 200-step 正式 run 在 Stage G 尚未 commit 时执行，因此 metadata 如实记录 `7e80569 + dirty=true`；同一组代码随后精确提交为 `c01c087`，最终完整回归在干净提交上通过。
+
+### Day 7 验收状态
+
+- [x] Training config、state、optimizer、scheduler
+- [x] Accumulation、clip、finite checks
+- [x] FP32 与 CUDA BF16
+- [x] Deterministic train/validation streams
+- [x] JSONL、resolved config、metadata
+- [x] Atomic checkpoint 与 strict resume
+- [x] Dry-run 与正式 CLI
+- [x] Pilot 200 updates
+- [x] BF16 smoke
+- [x] Resume 一致性
+- [x] 508 项完整回归
+- [x] AutoDL/Full 未启动
+
+### Day 7 结论
+
+项目现已形成完整、可验证、可恢复的本地训练工程链路：
+
+```text
+FineWeb-Edu Pilot
+→ frozen 16K BPE
+→ recoverable token store
+→ causal DataLoader
+→ handwritten Decoder-only GPT
+→ AdamW + warmup/cosine
+→ FP32/BF16 accumulated updates
+→ deterministic validation
+→ JSONL metrics
+→ atomic checkpoint
+→ strict resume
+```
+
+这证明训练系统已经具备进入云端资源定标的工程基础，但不代表 34M Baseline 已经完成预训练或具备实用生成能力。
+
+### 下一阶段
+
+- 在 Day 7 文档提交并普通 push 后核对本地/远端 hash；
+- 由用户明确授权后再启动 AutoDL；
+- 在 RTX 5090 上探测 Baseline micro-batch、accumulation、显存和吞吐；
+- 冻结 workers、pin memory 与 checkpoint 路径；
+- 运行 Baseline BF16 短 smoke 和 resume；
+- 完成 Full 数据与磁盘预算后，才允许启动 300M-token 正式预训练。
