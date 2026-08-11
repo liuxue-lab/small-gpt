@@ -320,3 +320,173 @@ def test_rejects_out_of_range_targets(invalid_id):
 
     with pytest.raises(ValueError, match="valid range"):
         model(input_ids, targets)
+
+
+def test_future_tokens_do_not_change_past_logits():
+    torch.manual_seed(1337)
+    config = tiny_config()
+    model = GPT(config).eval()
+    original = torch.randint(0, config.vocab_size, (2, 12))
+    modified = original.clone()
+    modified[:, 7:] = (modified[:, 7:] + 1) % config.vocab_size
+
+    with torch.no_grad():
+        original_logits = model(original).logits
+        modified_logits = model(modified).logits
+
+    torch.testing.assert_close(
+        original_logits[:, :7],
+        modified_logits[:, :7],
+        rtol=0,
+        atol=1.0e-7,
+    )
+    assert torch.count_nonzero(original_logits[:, 7:] - modified_logits[:, 7:]) > 0
+
+
+def test_full_model_backward_and_second_pass_have_valid_gradients():
+    torch.manual_seed(1337)
+    config = tiny_config()
+    model = GPT(config)
+    input_ids = torch.randint(0, config.vocab_size, (3, 10))
+    targets = torch.randint(0, config.vocab_size, (3, 10))
+
+    first_output = model(input_ids, targets)
+    assert first_output.loss is not None
+    first_output.loss.backward()
+
+    first_gradients = {
+        name: parameter.grad for name, parameter in model.named_parameters()
+    }
+    assert first_gradients
+    assert all(gradient is not None for gradient in first_gradients.values())
+    assert all(
+        bool(torch.isfinite(gradient).all())
+        for gradient in first_gradients.values()
+        if gradient is not None
+    )
+    assert all(
+        bool(torch.count_nonzero(gradient))
+        for gradient in first_gradients.values()
+        if gradient is not None
+    )
+
+    assert model.token_embedding.weight.grad is not None
+    assert model.position_embedding.weight.grad is not None
+    assert model.final_norm.weight.grad is not None
+    for block in model.blocks:
+        assert block.norm1.weight.grad is not None
+        assert block.norm2.weight.grad is not None
+        assert block.attention.qkv_proj.weight.grad is not None
+        assert block.attention.out_proj.weight.grad is not None
+        assert block.mlp.fc_in.weight.grad is not None
+        assert block.mlp.fc_out.weight.grad is not None
+
+    model.zero_grad(set_to_none=True)
+    assert all(parameter.grad is None for parameter in model.parameters())
+
+    second_output = model(input_ids, targets)
+    assert second_output.loss is not None
+    second_output.loss.backward()
+
+    for parameter in model.parameters():
+        assert parameter.grad is not None
+        assert torch.isfinite(parameter.grad).all()
+        assert torch.count_nonzero(parameter.grad) > 0
+
+
+def test_tied_parameter_is_not_duplicated_in_optimizer_inputs():
+    model = GPT(tiny_config())
+    named_parameters = dict(model.named_parameters())
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-3)
+    optimizer_parameters = [
+        parameter for group in optimizer.param_groups for parameter in group["params"]
+    ]
+
+    assert "token_embedding.weight" in named_parameters
+    assert "lm_head.weight" not in named_parameters
+    assert len({id(parameter) for parameter in optimizer_parameters}) == len(
+        optimizer_parameters
+    )
+    assert (
+        sum(
+            parameter is model.token_embedding.weight
+            for parameter in optimizer_parameters
+        )
+        == 1
+    )
+
+
+def test_state_dict_strict_round_trip_preserves_logits_and_tying(tmp_path):
+    torch.manual_seed(1337)
+    config = tiny_config()
+    original_model = GPT(config).eval()
+    input_ids = torch.randint(0, config.vocab_size, (2, 9))
+
+    with torch.no_grad():
+        reference_logits = original_model(input_ids).logits
+
+    state_path = tmp_path / "model-state.pt"
+    torch.save(original_model.state_dict(), state_path)
+
+    loaded_model = GPT(config).eval()
+    state_dict = torch.load(
+        state_path,
+        map_location="cpu",
+        weights_only=True,
+    )
+    incompatible = loaded_model.load_state_dict(state_dict, strict=True)
+
+    assert incompatible.missing_keys == []
+    assert incompatible.unexpected_keys == []
+    assert loaded_model.lm_head.weight is loaded_model.token_embedding.weight
+    assert (
+        loaded_model.lm_head.weight.data_ptr()
+        == loaded_model.token_embedding.weight.data_ptr()
+    )
+
+    with torch.no_grad():
+        loaded_logits = loaded_model(input_ids).logits
+
+    torch.testing.assert_close(
+        loaded_logits,
+        reference_logits,
+        rtol=0,
+        atol=0,
+    )
+
+
+def test_fixed_seed_reproduces_entire_state_dict():
+    config = tiny_config()
+
+    torch.manual_seed(2026)
+    first_model = GPT(config)
+    first_state = first_model.state_dict()
+
+    torch.manual_seed(2026)
+    second_model = GPT(config)
+    second_state = second_model.state_dict()
+
+    assert first_state.keys() == second_state.keys()
+    for key in first_state:
+        torch.testing.assert_close(
+            first_state[key],
+            second_state[key],
+            rtol=0,
+            atol=0,
+        )
+
+
+def test_causal_masks_are_buffers_excluded_from_state_and_parameters():
+    config = tiny_config()
+    model = GPT(config)
+    named_buffers = dict(model.named_buffers())
+    state_keys = set(model.state_dict())
+    parameter_names = set(dict(model.named_parameters()))
+
+    mask_names = {
+        f"blocks.{index}.attention.causal_mask" for index in range(config.n_layer)
+    }
+
+    assert mask_names <= set(named_buffers)
+    assert mask_names.isdisjoint(state_keys)
+    assert mask_names.isdisjoint(parameter_names)
