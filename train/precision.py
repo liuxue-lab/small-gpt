@@ -17,6 +17,17 @@ class PrecisionConfigError(ValueError):
     """Raised when the requested precision is unsupported on a device."""
 
 
+def _current_cuda_device() -> torch.device:
+    try:
+        device_index = torch.cuda.current_device()
+    except Exception as error:
+        raise DeviceResolutionError(
+            "CUDA was reported available, but its current device could not be "
+            "resolved"
+        ) from error
+    return torch.device("cuda", device_index)
+
+
 def resolve_device(requested_device: str) -> torch.device:
     if not isinstance(requested_device, str):
         raise DeviceResolutionError(
@@ -30,12 +41,16 @@ def resolve_device(requested_device: str) -> torch.device:
         )
 
     if requested_device == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if requested_device == "cuda" and not torch.cuda.is_available():
-        raise DeviceResolutionError(
-            "CUDA was requested but torch.cuda.is_available() is False"
-        )
-    return torch.device(requested_device)
+        if torch.cuda.is_available():
+            return _current_cuda_device()
+        return torch.device("cpu")
+    if requested_device == "cuda":
+        if not torch.cuda.is_available():
+            raise DeviceResolutionError(
+                "CUDA was requested but torch.cuda.is_available() is False"
+            )
+        return _current_cuda_device()
+    return torch.device("cpu")
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +78,8 @@ class PrecisionPolicy:
             raise DeviceResolutionError(
                 "CUDA policy was constructed, but CUDA is unavailable"
             )
+        if self.device.type == "cuda" and self.device.index is None:
+            object.__setattr__(self, "device", _current_cuda_device())
         if self.precision == "bf16":
             if self.device.type != "cuda":
                 raise PrecisionConfigError(

@@ -499,6 +499,7 @@ def test_constructor_rejects_precision_policy_mismatch(monkeypatch):
     optimizer = build_optimizer(model, config)
     scheduler = build_scheduler(optimizer, config, plan)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
 
     with pytest.raises(TrainingStepError, match="precision policy"):
         Trainer(

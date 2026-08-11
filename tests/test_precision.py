@@ -25,8 +25,16 @@ def test_auto_resolves_cpu_when_cuda_is_unavailable(monkeypatch):
 
 def test_auto_resolves_cuda_when_cuda_is_available(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 2)
 
-    assert resolve_device("auto") == torch.device("cuda")
+    assert resolve_device("auto") == torch.device("cuda:2")
+
+
+def test_explicit_cuda_resolves_current_device_index(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
+
+    assert resolve_device("cuda") == torch.device("cuda:1")
 
 
 def test_explicit_cpu_does_not_depend_on_cuda(monkeypatch):
@@ -74,11 +82,12 @@ def test_rejects_unsupported_precision(precision):
 
 def test_cuda_bf16_policy_requires_and_records_native_support(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: True)
 
     policy = PrecisionPolicy.resolve("cuda", "bf16")
 
-    assert policy.device == torch.device("cuda")
+    assert policy.device == torch.device("cuda:0")
     assert policy.uses_autocast is True
     assert policy.autocast_dtype == torch.bfloat16
     assert policy.uses_grad_scaler is False
@@ -86,10 +95,20 @@ def test_cuda_bf16_policy_requires_and_records_native_support(monkeypatch):
 
 def test_cuda_bf16_rejects_missing_native_support(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
 
     with pytest.raises(PrecisionConfigError, match="bfloat16 support"):
         PrecisionPolicy.resolve("cuda", "bf16")
+
+
+def test_direct_cuda_policy_canonicalizes_current_device(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 3)
+
+    policy = PrecisionPolicy(torch.device("cuda"), "fp32")
+
+    assert policy.device == torch.device("cuda:3")
 
 
 def test_direct_cuda_policy_still_rejects_unavailable_cuda(monkeypatch):
