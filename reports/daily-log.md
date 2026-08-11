@@ -669,3 +669,269 @@ tests/test_dataset.py          8 passed
 - 校验因果 mask、tensor shape、参数量和初始化；
 - 使用 Debug 配置完成单批次前向、反向和过拟合测试；
 - Full 语料采集与租用 GPU 正式训练继续保持未启动状态。
+
+## Day 6：Decoder-only GPT 模型实现与验证
+
+### 日期
+
+2026-08-11
+
+### 今日目标
+
+在 Day 5 已冻结的 tokenized data 与因果 `x/y` 契约上，从零实现一套可验证、可反向传播的 Decoder-only GPT，并完成以下闭环：
+
+1. 冻结模型结构、初始化、loss 与参数量契约；
+2. 实现 Embedding、MLP、手写 Causal Self-Attention、Transformer Block 和完整 GPT；
+3. 用单元测试证明 shape、因果性、weight tying、梯度、初始化和 state dict 行为；
+4. 用 synthetic batch 完成 CUDA forward/backward；
+5. 用固定 batch 过拟合证明优化方向和目标对齐正确；
+6. 接入 Day 5 真实 tokenized Pilot 完成 forward/backward；
+7. 运行全项目回归并保持 Git 工作区可审计。
+
+Day 6 不包含正式训练循环、checkpoint、350M Full 语料采集或 AutoDL 训练。
+
+### 冻结的架构契约
+
+| 项目 | Day 6 冻结值 |
+| --- | --- |
+| Architecture | Decoder-only GPT |
+| Block order | Pre-LayerNorm |
+| Position encoding | Learned absolute position embedding |
+| Attention | 手写 scaled dot-product causal MHA |
+| QKV | 融合 `Linear(C, 3C)`，显式拆分 heads |
+| Scale | `1/sqrt(head_dim)` |
+| Causal mask | boolean 下三角，对角线可见 |
+| Softmax | FP32 计算后转回输入 dtype |
+| Linear bias | false |
+| LayerNorm | affine，`eps=1e-5` |
+| MLP | `C -> 4C -> C`，GELU tanh approximation |
+| Output | final LayerNorm 与 bias-free LM head |
+| Weight tying | token embedding 与 LM head 共享 Parameter |
+| Base initialization | `Normal(0, 0.02)` |
+| Residual projection std | `0.02/sqrt(2 * n_layer)` |
+| Loss | 同位置 logits/targets cross entropy，不二次 shift |
+
+### 配置与精确参数量
+
+| 配置 | Layers | Heads | Hidden | FFN | Context | Vocab | 精确参数量 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Debug | 2 | 2 | 128 | 512 | 128 | 16,384 | 2,508,032 |
+| Baseline | 8 | 8 | 512 | 2,048 | 512 | 16,384 | 33,833,984 |
+
+配置检查器现在使用与真实实现一致的精确参数公式，并严格校验模型字段、维度关系、冻结选项和 Tokenizer/模型词表一致性。实际模型参数量与配置公式完全一致，tied LM head 不重复计数。
+
+### 分阶段实现
+
+#### Stage A～B：仓库基线与模型设计
+
+- 确认 Day 5 最终提交为 `a569e2c`，本地与 `origin/main` 同步；
+- 确认 Debug/Baseline、Day 5 manifest 和 Dataset 均存在；
+- 冻结 Decoder-only GPT 的结构、数值边界、输入输出与验收条件；
+- 更新 `configs/debug.yaml`、`configs/baseline.yaml`、配置检查器和配置测试；
+- 生成 `reports/day-06-model-design.md`。
+
+#### Stage C：配置、Embedding 与 MLP
+
+- 新增严格的 `GPTConfig` 与 YAML 加载；
+- 实现 token embedding 与 learned position embedding；
+- 实现 bias-free `C -> 4C -> C` GELU MLP；
+- 测试字段错误、维度错误、token 范围、最大上下文、dropout 和梯度。
+
+#### Stage D：手写 Causal Self-Attention
+
+- 使用单个融合 QKV projection；
+- 显式执行 head split/merge、矩阵乘法、缩放、mask、softmax 和 value aggregation；
+- 因果 mask 注册为 non-persistent buffer；
+- 没有调用 PyTorch SDPA 替代首版核心 Attention；
+- 测试未来概率、行和、前缀隔离、边界长度和 backward。
+
+#### Stage E～F：Transformer Block 与完整 GPT
+
+- 实现两条 residual path 的 Pre-LN Block；
+- 组装 Embedding、Blocks、final LayerNorm 和 LM head；
+- 实现 `GPTOutput(logits, loss)`；
+- 完成 weight tying、基础初始化和残差投影缩放初始化；
+- 测试整模因果性、loss、连续 backward、optimizer 去重和 state dict round-trip。
+
+### 模型专项测试
+
+| 测试文件 | 结果 |
+| --- | ---: |
+| `tests/test_model_config.py` | 35 passed |
+| `tests/test_layers.py` | 23 passed |
+| `tests/test_attention.py` | 23 passed |
+| `tests/test_model.py` | 32 passed |
+| **合计** | **113 passed** |
+
+专项测试没有失败或错误。它们直接证明了：
+
+- Attention 和整个 GPT 都无法观察未来 token；
+- causal mask 对角线可见，未来概率为 0；
+- logits 为 `[B,T,V]`，loss 为有限 scalar；
+- Day 5 已 shift 的 targets 不会被模型二次 shift；
+- tied weights 是同一个 Parameter 和同一块 storage；
+- optimizer 参数遍历不会重复共享权重；
+- 所有应训练参数均可获得有限梯度；
+- 固定随机种子可复现初始化；
+- strict state dict 加载后 tying 仍成立；
+- causal mask 不进入参数列表或 state dict。
+
+### Synthetic CUDA forward/backward
+
+执行条件：Debug 配置、CUDA、seed 42、batch size 4、sequence length 128。
+
+| 指标 | 实测结果 |
+| --- | --- |
+| Parameters / trainable | 2,508,032 / 2,508,032 |
+| Weight tying | `True` |
+| Input / target | `(4,128)` / `(4,128)`，`torch.int64` |
+| Causal `x/y` shift | `True` |
+| Input token range | `[9,16370]` |
+| Logits | `(4,128,16384)` |
+| Loss | `9.726461` |
+| Logits finite | `True` |
+| Gradient tensors | 20 |
+| Nonzero gradients | 20 |
+| Gradients finite | `True` |
+
+该结果证明完整模型可在本地 GPU 上接收标准 token batch、生成有限 loss 并完成反向传播。
+
+### 固定 batch 过拟合
+
+执行条件：Debug 配置、CUDA、seed 42、固定 synthetic batch、batch size 4、sequence length 32、200 steps、learning rate 0.003。
+
+| 指标 | 实测结果 |
+| --- | ---: |
+| Initial loss | 9.704769 |
+| Final loss | 0.003591 |
+| Final / Initial | 约 0.037% |
+| Elapsed | 6.66 seconds |
+
+最终 loss 远低于初始值的 50% 验收线，说明目标对齐、cross entropy、梯度路径和参数更新方向正确。此处 AdamW 只用于诊断，权重未写入磁盘。
+
+### 真实 tokenized Pilot forward/backward
+
+执行条件：Debug 配置、CUDA、Day 5 Pilot manifest、batch size 4、sequence length 128、`num_workers=0`、seed 42。
+
+| 指标 | 实测结果 |
+| --- | --- |
+| Manifest exists | `True` |
+| Input / target | `(4,128)` / `(4,128)`，`torch.int64` |
+| Causal `x/y` shift | `True` |
+| Input token range | `[15,15865]` |
+| Logits | `(4,128,16384)` |
+| Loss | `9.744143` |
+| Logits finite | `True` |
+| Gradient tensors | 20 |
+| Nonzero gradients | 20 |
+| Gradients finite | `True` |
+| Elapsed | 4.97 seconds |
+
+Day 5 的 Dataset/DataLoader 和 Day 6 的 GPT 已完成真实接口闭环。运行期间 Pilot manifest、二进制数据和 Tokenizer 均保持只读。
+
+### 完整项目回归
+
+最终执行：
+
+```powershell
+python .\scripts\check_config.py
+python -m pytest -q
+```
+
+结果：
+
+```text
+All configuration checks passed.
+216 passed in 9.94s
+```
+
+PowerShell 外层计时为 13.57 seconds。完整回归覆盖 Day 1～Day 6，没有 failed、error 或 skipped；执行后 Git 工作区仍然干净。
+
+### Day 6 代码提交
+
+| Commit | 内容 |
+| --- | --- |
+| `06efac4` | `feat: define decoder-only GPT model contract` |
+| `4632aa2` | `feat: add GPT config embeddings and MLP` |
+| `053ce40` | `feat: add handwritten causal self-attention` |
+| `1bf1a52` | `feat: assemble decoder-only GPT model` |
+| `3eddd2b` | `test: verify full GPT model contract` |
+
+文档收口将作为独立提交精确暂存，便于将代码实现、测试增强和最终实测记录分别审计。
+
+### 新增或修改文件
+
+- `configs/baseline.yaml`
+- `configs/debug.yaml`
+- `model/__init__.py`
+- `model/attention.py`
+- `model/block.py`
+- `model/config.py`
+- `model/gpt.py`
+- `model/layers.py`
+- `scripts/check_config.py`
+- `scripts/inspect_model.py`
+- `tests/test_attention.py`
+- `tests/test_config.py`
+- `tests/test_layers.py`
+- `tests/test_model.py`
+- `tests/test_model_config.py`
+- `reports/day-06-model-design.md`
+- `reports/day-06-execution-report.md`
+- `reports/daily-log.md`
+- `README.md`
+
+### 关键问题与处理
+
+1. Day 5 已经提供右移一位的 targets，因此模型直接对同位置 logits/targets 求 loss，避免二次 shift；
+2. 因果性不只检查 mask 形状，还检查未来概率、Attention 前缀隔离和整模 token 前缀隔离；
+3. 首版 Attention 保留显式矩阵计算，确保缩放、mask、softmax dtype 与 head 变换均可审计；
+4. weight tying 同时验证对象 identity、storage pointer、参数遍历和加载后行为；
+5. 固定 batch 过拟合仅为模型诊断，不被误写成正式训练完成；
+6. Git 的 LF/CRLF 提示不影响代码正确性；每个阶段均用 `git diff --check` 排除空白错误；
+7. 模型验证只读复用 Pilot，没有修改或重新生成 Day 5 数据。
+
+### Day 6 验收状态
+
+- [x] 架构、配置、初始化与 loss 契约冻结
+- [x] Token/position embedding 与 GELU MLP 完成
+- [x] 手写 Causal Self-Attention 完成
+- [x] Pre-LN Transformer Block 与完整 GPT 完成
+- [x] Final LayerNorm 与真正的 weight tying 完成
+- [x] Debug/Baseline 精确参数量验证通过
+- [x] Attention 与整模因果行为验证通过
+- [x] 梯度、optimizer 去重、初始化与 state dict 验证通过
+- [x] 113 项模型专项测试通过
+- [x] Synthetic CUDA forward/backward 通过
+- [x] 固定 batch 过拟合通过
+- [x] 真实 Pilot forward/backward 通过
+- [x] 216 项完整回归通过
+- [x] 正式训练、checkpoint、Full 语料和 AutoDL 保持未启动
+
+### Day 6 结论
+
+项目已经首次形成完整且可验证的模型链路：
+
+```text
+FineWeb-Edu Pilot
+-> 16K ByteLevel BPE
+-> uint16 tokenized corpus
+-> reproducible causal x/y DataLoader
+-> handwritten Decoder-only GPT
+-> finite next-token loss
+-> correct backward
+-> fixed-batch overfit
+```
+
+这证明当前模型实现不仅能通过形状测试，也能接收真实语料 batch、保持因果性、产生有限 loss、传播梯度并被优化。
+
+### 下一阶段
+
+- 冻结 AdamW、weight decay 参数分组与学习率调度契约；
+- 实现 gradient accumulation 和精确 token/step 计数；
+- 实现 BF16/FP32 autocast 与 GradScaler 边界；
+- 实现 validation loss 与评估频率；
+- 实现 checkpoint 原子保存、strict 恢复以及 optimizer/scheduler/RNG 状态；
+- 使用 Debug 模型完成短训练、中断和恢复一致性测试；
+- 全部通过后再准备 Baseline 与租用 GPU；
+- 350M Full 数据与正式预训练仍需独立验收后启动。
