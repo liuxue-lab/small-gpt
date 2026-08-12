@@ -173,6 +173,7 @@ def test_full_stream_uses_explicit_files_without_repository_enumeration(
         source_url = kwargs["data_files"]["train"][0]
         return iter([{"source_url": source_url}])
 
+    monkeypatch.delenv("SMALL_GPT_SOURCE_CACHE_DIR", raising=False)
     monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com/")
     monkeypatch.setattr("datasets.load_dataset", fake_load_dataset)
 
@@ -193,6 +194,101 @@ def test_full_stream_uses_explicit_files_without_repository_enumeration(
         assert kwargs["split"] == "train"
         assert kwargs["streaming"] is True
         assert kwargs["data_files"] == {"train": [source_url]}
+        assert kwargs["columns"] == [
+            "id",
+            "text",
+            "url",
+            "language",
+            "language_score",
+            "int_score",
+            "token_count",
+        ]
+
+
+def test_full_stream_resolves_frozen_files_from_local_hub_cache(
+    monkeypatch,
+    tmp_path,
+):
+    config = load_run_config(
+        PROJECT_ROOT / "configs" / "data_fineweb_edu.yaml",
+        "full",
+    )
+    cache_dir = (tmp_path / "hub-cache").resolve()
+    cache_dir.mkdir()
+    download_calls = []
+    load_calls = []
+
+    def fake_hf_hub_download(**kwargs):
+        download_calls.append(kwargs)
+        local_path = cache_dir / "snapshot" / kwargs["filename"]
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.touch()
+        return str(local_path)
+
+    def fake_load_dataset(*args, **kwargs):
+        load_calls.append((args, kwargs))
+        return iter([{"source_path": kwargs["data_files"]["train"][0]}])
+
+    monkeypatch.setenv("SMALL_GPT_SOURCE_CACHE_DIR", str(cache_dir))
+    monkeypatch.setattr(
+        "huggingface_hub.hf_hub_download",
+        fake_hf_hub_download,
+    )
+    monkeypatch.setattr("datasets.load_dataset", fake_load_dataset)
+
+    stream = open_fineweb_edu_stream(config)
+    assert download_calls == []
+    assert load_calls == []
+
+    records = list(stream)
+    assert len(records) == len(EXPECTED_FULL_SOURCE_FILES)
+    assert len(download_calls) == len(EXPECTED_FULL_SOURCE_FILES)
+    assert len(load_calls) == len(EXPECTED_FULL_SOURCE_FILES)
+
+    for source_file, download_call, (args, kwargs), record in zip(
+        EXPECTED_FULL_SOURCE_FILES,
+        download_calls,
+        load_calls,
+        records,
+        strict=True,
+    ):
+        assert download_call == {
+            "repo_id": "HuggingFaceFW/fineweb-edu",
+            "filename": source_file,
+            "repo_type": "dataset",
+            "revision": REVISION,
+            "cache_dir": str(cache_dir),
+            "local_files_only": True,
+        }
+        expected_path = str(cache_dir / "snapshot" / source_file)
+        assert args == ("parquet",)
+        assert kwargs["data_files"] == {"train": [expected_path]}
+        assert kwargs["split"] == "train"
+        assert kwargs["streaming"] is True
+        assert kwargs["columns"] == [
+            "id",
+            "text",
+            "url",
+            "language",
+            "language_score",
+            "int_score",
+            "token_count",
+        ]
+        assert record == {"source_path": expected_path}
+
+
+def test_full_stream_rejects_relative_local_source_cache(monkeypatch):
+    config = load_run_config(
+        PROJECT_ROOT / "configs" / "data_fineweb_edu.yaml",
+        "full",
+    )
+    monkeypatch.setenv("SMALL_GPT_SOURCE_CACHE_DIR", "relative-cache")
+
+    with pytest.raises(
+        ValueError,
+        match="SMALL_GPT_SOURCE_CACHE_DIR must be an absolute path",
+    ):
+        next(iter(open_fineweb_edu_stream(config)))
 
 
 def test_full_manifest_records_explicit_source_file_identity(tmp_path):

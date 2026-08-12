@@ -38,6 +38,16 @@ except ModuleNotFoundError:  # Support direct execution from the scripts directo
 SCHEMA_VERSION = 1
 SHARD_DIRECTORY_RE = re.compile(r"^shard-(\d{5})$")
 TEMPORARY_SHARD_RE = re.compile(r"^\.shard-(\d{5})\.tmp$")
+SOURCE_CACHE_ENV = "SMALL_GPT_SOURCE_CACHE_DIR"
+SOURCE_COLUMNS = (
+    "id",
+    "text",
+    "url",
+    "language",
+    "language_score",
+    "int_score",
+    "token_count",
+)
 
 
 class CorpusIntegrityError(RuntimeError):
@@ -808,18 +818,64 @@ def _explicit_source_urls(config: CorpusRunConfig) -> list[str]:
     ]
 
 
+def _iter_explicit_source_locations(
+    config: CorpusRunConfig,
+) -> Iterable[str]:
+    """Resolve frozen sources remotely or from an explicitly selected cache."""
+    raw_cache_dir = os.environ.get(SOURCE_CACHE_ENV)
+    if raw_cache_dir is None:
+        yield from _explicit_source_urls(config)
+        return
+
+    cache_dir = Path(raw_cache_dir)
+    if not cache_dir.is_absolute():
+        raise ValueError(f"{SOURCE_CACHE_ENV} must be an absolute path")
+    if not cache_dir.is_dir():
+        raise FileNotFoundError(
+            f"{SOURCE_CACHE_ENV} does not exist or is not a directory: "
+            f"{cache_dir}"
+        )
+
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    for source_file in config.source_files:
+        try:
+            local_path = Path(
+                hf_hub_download(
+                    repo_id=config.dataset_name,
+                    filename=source_file,
+                    repo_type="dataset",
+                    revision=config.dataset_revision,
+                    cache_dir=str(cache_dir),
+                    local_files_only=True,
+                )
+            )
+        except LocalEntryNotFoundError as exc:
+            raise FileNotFoundError(
+                f"frozen source is not present in {SOURCE_CACHE_ENV}: "
+                f"{source_file}"
+            ) from exc
+        if not local_path.is_file():
+            raise FileNotFoundError(
+                f"cached frozen source does not exist: {local_path}"
+            )
+        yield str(local_path)
+
+
 def _iter_explicit_source_stream(
     config: CorpusRunConfig,
 ) -> Iterable[dict[str, Any]]:
-    """Open each frozen remote Parquet file only when it is needed."""
+    """Open each frozen Parquet file only when it is needed."""
     from datasets import load_dataset
 
-    for source_url in _explicit_source_urls(config):
+    for source_location in _iter_explicit_source_locations(config):
         source_stream = load_dataset(
             "parquet",
-            data_files={config.dataset_split: [source_url]},
+            data_files={config.dataset_split: [source_location]},
             split=config.dataset_split,
             streaming=config.streaming,
+            columns=list(SOURCE_COLUMNS),
         )
         yield from source_stream
 
