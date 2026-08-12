@@ -8,10 +8,10 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 当前阶段 | Day 8 RTX 5090 资源定标、Baseline 配置冻结、本地回归与 Git 远端闭环已完成 |
-| 自动测试 | Day 8 定向测试 `83 passed in 2.41s`；完整回归 `531 passed in 13.95s` |
+| 当前阶段 | Day 9 Full source、Tokenized Full、真实 DataLoader 与单更新 smoke 已完成；300M 正式预训练未启动 |
+| 自动测试 | Day 9 最终本地 `551 passed in 42.46s`；AutoDL `551 passed, 2 warnings in 5.87s` |
 | 数据集 | `HuggingFaceFW/fineweb-edu` / `sample-10BT` |
-| 数据访问方式 | 固定 revision 的流式读取 |
+| 数据访问方式 | 固定 revision、14 个显式 Parquet 源文件、经过 bytes/SHA 验证的可恢复本地 cache |
 | 数据管线 | 支持清洗、去重、划分、分片、恢复与完整性校验 |
 | 真实网络 Smoke | 53,004 provided tokens，2 个 shard groups |
 | 2M Pilot | 2,000,083 provided tokens，4 个 shard groups |
@@ -26,7 +26,10 @@
 | 恢复验证 | 下一 batch/LR/RNG 精确恢复；模型与 optimizer 在冻结 CUDA FP32 tolerance 内一致 |
 | Baseline 资源 | RTX 5090 已冻结 `micro=16`、`accum=8`、`workers=4`、`pin_memory=false` |
 | Baseline 短跑 | BF16 25 updates / 1,638,400 tokens；validation、checkpoint 与 20→25 resume 均通过 |
-| 正式语料 | 计划采集 350M provided tokens，尚未执行 |
+| Full source corpus | 338,849 文档、350,000,812 provided tokens、70 个 shard groups，完整验证通过 |
+| Tokenized Full | 379,587,945 model tokens、77 个 storage shards、759,175,890 payload bytes |
+| Full 单更新 | BF16 step 1 / 65,536 tokens；loss 9.816444；0 evaluation；1 个严格 checkpoint |
+| 正式预训练 | 300M tokens / 4,578 updates 尚未启动，仍需独立授权 |
 | Git 分支 | `main` |
 
 > FineWeb-Edu 的 `provided_token_count` 使用上游 Tokenizer 口径，只用于语料采集预算。当前项目 BPE 在全 Pilot 上产生 2,129,776 个模型 token，比 2,000,083 个 provided tokens 高约 6.48%。后续训练预算以项目 Tokenizer 的实际 token 数为准。
@@ -94,9 +97,9 @@
 | --- | ---: | ---: | --- |
 | Smoke | 50,000 | 25,000 | 已完成 |
 | Pilot | 2,000,000 | 500,000 | 已完成 |
-| Full | 350,000,000 | 5,000,000 | 尚未执行 |
+| Full | 350,000,000 | 5,000,000 | 已完成：350,000,812 tokens / 70 shard groups |
 
-Full 数据预计生成约 70 个 shard groups。项目为清洗后语料预留 5 GB 空间，不保存原始 full-corpus shard。
+Full 数据实际生成 70 个 shard groups，约占 1.7 GB；经过验证的 2.15 GB 源 Parquet 保存在 AutoDL 本地 cache，未进入 Git。
 
 ## Day 3 Pilot 结果
 
@@ -471,7 +474,8 @@ python .\scripts\train_gpt.py `
 - `configs/baseline.yaml`：33,833,984 参数租用 GPU 正式训练配置；Day 8 已冻结 RTX 5090 资源字段 `16 / 8 / 4 / false`；
 - `configs/data_fineweb_edu.yaml`：FineWeb-Edu 采集、清洗、划分和分片配置；
 - `configs/tokenizer.yaml`：ByteLevel BPE 训练、产物和评估配置；
-- `configs/tokenized_data.yaml`：tokenized binary、索引、发布恢复和 Dataset 契约。
+- `configs/tokenized_data.yaml`：冻结 Pilot 的 tokenized binary、索引、发布恢复和 Dataset 契约；
+- `configs/tokenized_data_full.yaml`：与 Full source manifest 身份绑定的正式编码配置。
 
 ## 本地验证
 
@@ -483,15 +487,14 @@ python .\scripts\check_config.py
 python -m pytest -q
 ```
 
-Day 8 四字段冻结后的完整测试结果：
+Day 9 source lifecycle 最终版本的本地完整测试结果：
 
 ```text
-531 passed in 13.95s
-PowerShell outer elapsed: 15.71s
+551 passed in 42.46s
 Exit code: 0
 ```
 
-`tests/test_training_config.py` 与 `tests/test_resource_probe.py` 定向门为 `83 passed in 2.41s`，PowerShell outer elapsed 为 3.20 秒；`git diff --check` exit code 为 0。
+同一最终提交在 AutoDL 上为 `551 passed, 2 warnings in 5.87s`。两个 warning 来自 Python 3.12 对多线程进程中 `fork()` 的弃用提示；DataLoader worker 释放已通过独立真实 Full 验证。Day 9 各功能提交均先通过定向测试和完整回归，`git diff --check` exit code 为 0。
 
 测试范围包括：
 
@@ -522,6 +525,11 @@ Exit code: 0
 - checkpoint schema、原子保存、identity mismatch 拒绝与 RNG/data cursor 恢复；
 - 正式训练循环的 log/eval/save interval、final checkpoint 与 CLI 行为。
 - isolated resource candidate、显存门、OOM 识别、原子探测报告与 loader 推荐。
+- Full profile manifest-bound 配置、显式源文件顺序和 fingerprint；
+- verified local source cache、bytes/SHA 身份与 local-only Parquet；
+- source stream 的成功、异常和 non-closeable 生命周期；
+- Full token conservation、原子发布、完成态验证与 CLI profile；
+- tokenizer metadata 跨平台 LF/CRLF-only 身份 fallback。
 
 ## 项目结构
 
@@ -532,7 +540,8 @@ small-gpt/
 │   ├── data_fineweb_edu.yaml
 │   ├── debug.yaml
 │   ├── tokenizer.yaml
-│   └── tokenized_data.yaml
+│   ├── tokenized_data.yaml
+│   └── tokenized_data_full.yaml
 ├── data/                          # 本地生成数据，不提交到 Git
 ├── data_pipeline/
 │   ├── __init__.py
@@ -564,7 +573,8 @@ small-gpt/
 │   ├── day-07-execution-report.md
 │   ├── day-07-training-system-design.md
 │   ├── day-08-resource-calibration-design.md
-│   └── day-08-resource-calibration-report.md
+│   ├── day-08-resource-calibration-report.md
+│   └── day-09-full-data-report.md
 ├── scripts/
 │   ├── build_fineweb_edu_corpus.py
 │   ├── check_checkpoint_resume.py
@@ -594,6 +604,7 @@ small-gpt/
 │   ├── test_dataset.py
 │   ├── test_environment.py
 │   ├── test_evaluation.py
+│   ├── test_full_source_stream_lifecycle.py
 │   ├── test_layers.py
 │   ├── test_model.py
 │   ├── test_model_config.py
@@ -604,6 +615,7 @@ small-gpt/
 │   ├── test_scheduler.py
 │   ├── test_streaming_data_pipeline.py
 │   ├── test_tokenization.py
+│   ├── test_tokenize_corpus_cli.py
 │   ├── test_tokenizer.py
 │   ├── test_train_gpt.py
 │   ├── test_trainer.py
@@ -647,7 +659,7 @@ small-gpt/
 - [x] Day 6：手写 Causal Self-Attention、Decoder-only GPT 并完成模型验收
 - [x] Day 7：实现训练循环、优化器、调度器、评估、日志与 checkpoint 恢复
 - [x] Day 8：资源定标、配置冻结、531 项回归与 Git 远端 hash 核对全部完成
-- [ ] 采集并验证正式训练语料
+- [x] Day 9：构建并验证 350M Full、379.6M Tokenized Full 与单更新 smoke
 - [ ] 在租用 GPU 上完成正式预训练
 - [ ] 实现文本生成与模型评估
 - [ ] 完成至少一个消融实验
@@ -671,13 +683,14 @@ small-gpt/
 - [Day 7 执行报告](reports/day-07-execution-report.md)
 - [Day 8 资源定标探针设计](reports/day-08-resource-calibration-design.md)
 - [Day 8 RTX 5090 资源定标执行报告](reports/day-08-resource-calibration-report.md)
+- [Day 9 Full 数据与单更新验收报告](reports/day-09-full-data-report.md)
 
 ## 当前阶段
 
-Day 8 的 GPU 实验阶段已经结束。33,833,984 参数 Baseline 已在 RTX 5090 上冻结 `micro_batch_size=16`、`gradient_accumulation_steps=8`、`num_workers=4`、`pin_memory=false`，形成 65,536 tokens/update、4,578 total updates 和 92 warmup updates 的可执行计划。
+Day 9 的 Full 数据阶段已经结束。338,849 篇保留文档形成 350,000,812 provided tokens / 70 个 source shard groups；同一冻结 Tokenizer 编码出 379,587,945 model tokens / 77 个 storage shards。source manifest、tokenized manifest、跨 shard `T+1`、workers 2/4、memmap/worker 释放和 Git ignore 均已通过验证。
 
-真实 Pilot 上的 isolated sweep、BF16 dry-run、25-step 短跑、step 10/20 validation、独立 resume 对照和正式入口 20 → 25 resume 均通过。A57 证据包已在本地核对 SHA，A57 与 F19 均由用户确认关机。
+33,833,984 参数 Baseline 已在真实 Full manifest 上完成 BF16 dry-run 和恰好一次 optimizer update：step 1 / 65,536 tokens、loss 9.816444、0 evaluation、1 checkpoint。检查点内部 TrainerState、resolved config、Full/Tokenizer/source identity 和 CUDA RNG 均通过 CPU 严格加载验证。该 smoke 只证明训练入口可执行，不是质量实验。
 
-Day 8 已按 100% 完成：四字段冻结和报告已经应用，83 项定向测试、531 项完整回归与 `git diff --check` 均通过；功能冻结提交 `9a6f2fed495669b994aa1e85706fe461535e1883` 已普通 push，`HEAD`、`origin/main` 与 GitHub `main` 三方 hash 一致。
+Day 9 技术提交截至 `23c63a6b81c6f44e6cb7dc1208395f1b84c4f407` 已普通 push 并与 `origin/main` 一致；本地和 AutoDL 最终完整回归均为 551 passed。63,808-byte 证据包 SHA-256 `0edd992562f64b1bdc156fd5bbb498f087b8de17097b974720b213075058e3a8` 已下载到仓库外，并通过 expected/actual/sidecar 三方 hash 与 66 个 archive entries 验证。
 
-后续 Full corpus 构建、tokenized Full 验证和 300M-token 正式预训练是独立阶段，仍须逐项通过硬门并获得新的明确授权。当前 Pilot 短跑结果只能证明训练链路可执行，不能作为模型质量结论。
+后续 300M-token / 4,578-update 正式预训练是独立阶段，必须重新核对持久盘数据、Git、GPU、manifest/fingerprint，并获得新的明确费用与长跑授权。Day 9 没有启动正式预训练。

@@ -1548,3 +1548,439 @@ Day 8 当前进度为 100%。GPU 实验、配置冻结、本地回归、功能�
 4. 已将功能冻结提交 `9a6f2fed495669b994aa1e85706fe461535e1883` 普通 push，并确认三方 hash 一致；
 5. Full corpus 和 tokenized Full 必须独立构建、验证和测量磁盘；
 6. 正式训练前重新核对 GPU/软件/数据身份并获得新的明确授权。
+
+## Day 9：Full 数据、Tokenized Full 与单更新 smoke
+
+### 日期
+
+2026-08-12～2026-08-13
+
+### 今日目标
+
+在不启动 300M-token 正式预训练的前提下：
+
+1. 把 Day 5 仅支持 Pilot 的 tokenization 扩展为 manifest-bound Full profile；
+2. 固定 FineWeb-Edu Full 的具体 revision 与显式 Parquet 文件列表；
+3. 在 AutoDL C14 RTX 5090 上构建 350M provided-token Full source corpus；
+4. 用 Day 4 冻结 Tokenizer 构建 Tokenized Full；
+5. 验证全部 shards、跨 shard `T+1` 与多 worker DataLoader；
+6. 在 Full manifest 上运行 BF16 dry-run；
+7. 只运行一次 optimizer update 并严格核验 checkpoint；
+8. 下载小型证据包，完成 SHA 与 archive entries 核对。
+
+### 授权与边界
+
+用户明确授权进入 Day 9 Stage B，并允许产生 AutoDL 费用。实例为 C14 RTX 5090，控制台价格 ¥2.78/小时。
+
+本轮明确不做：
+
+- 不启动 4,578 updates / 300M tokens 正式训练；
+- 不运行第二个 optimizer update；
+- 不把单更新 loss 当作模型质量结论；
+- 不提交 Full JSONL、tokenized binary、source cache 或 checkpoint；
+- 不自动释放 AutoDL 实例。
+
+### Day 9 初始 Git 状态
+
+本地 Day 8 最终状态：
+
+```text
+b2ec0ebb4559cdf7cc1938d068742180f04fac35
+docs: close Day 8 resource calibration
+HEAD == origin/main
+worktree clean
+```
+
+### Full tokenization 入口
+
+新增/修改：
+
+- `configs/tokenized_data_full.yaml`；
+- `data_pipeline/tokenization.py`；
+- `scripts/tokenize_corpus.py`；
+- `tests/test_tokenization.py`；
+- `tests/test_tokenize_corpus_cli.py`；
+- `data_pipeline/__init__.py`。
+
+第一阶段提交：
+
+```text
+5be64d3 feat: add verified full corpus tokenization
+```
+
+结果：
+
+```text
+targeted: 15 passed
+full: 540 passed
+profile choices: pilot, full
+```
+
+### Tokenizer metadata 跨平台身份
+
+AutoDL Linux checkout 中：
+
+```text
+ExpectedSHA=8622711407aab3f299996b7d3009d4f4447ae35879ca8e50451b5f0adbdf5141
+RawSHA=7525edf13e8f3082c9391307395a6e919272846d83fe90f152b8a0c32ab67ca8
+CanonicalCRLFSHA=8622711407aab3f299996b7d3009d4f4447ae35879ca8e50451b5f0adbdf5141
+IdentityResult=LINE_ENDING_ONLY
+```
+
+根因是 frozen digest 来自 Windows CRLF working tree，而 Git 在 Linux materialize 为 LF。修复保留 raw SHA 优先，只在内容可解码为 UTF-8 时同时计算 canonical LF/CRLF；只有换行不同才接受，任何其他内容变化仍拒绝。
+
+提交：
+
+```text
+7c4ad5d fix: normalize tokenizer metadata line endings
+targeted: 5 passed
+full: 541 passed
+```
+
+### 远端环境
+
+| 项目 | 结果 |
+| --- | --- |
+| 实例 | C14 |
+| GPU | NVIDIA GeForce RTX 5090 |
+| Driver | 580.105.08 |
+| VRAM | 32,607 MiB |
+| Python | 3.12.3 |
+| PyTorch | 2.12.1+cu130 |
+| CUDA | 13.0 |
+| BF16 | supported |
+| `datasets` | 5.0.1 |
+| `pyarrow` | 25.0.1 |
+| `tokenizers` | 0.23.1 |
+| 数据盘 | 50 GB |
+
+### Hugging Face 网络诊断
+
+直接 `load_dataset()` 首先失败：
+
+```text
+[Errno 101] Network is unreachable
+ConnectionError: Couldn't reach 'HuggingFaceFW/fineweb-edu'
+```
+
+AutoDL 加速脚本后，README HEAD 为 200，但 Hub tree pagination 间歇出现 503、server disconnect，且部分请求仍指向 `huggingface.co`。`hf-mirror.com` 的 README/API control requests 为 200，但 `datasets`/`huggingface_hub` 内部的分页和 range 请求仍不稳定。
+
+本地电脑的 VPN 节点不会直接改变 AutoDL 容器出口，因此没有通过关闭本地 VPN 猜测解决远端问题。
+
+### 显式 Full 源文件
+
+通过 mirror API 固定 14 个文件：
+
+```text
+sample/10BT/000_00000.parquet
+...
+sample/10BT/013_00000.parquet
+```
+
+修改配置与实现后：
+
+```text
+4be46ee fix: freeze explicit full corpus sources
+targeted gates: PASS
+full: 546 passed
+```
+
+Full config fingerprint：
+
+```text
+555c15b1e851f567290fda3acf7e39245d3bc050c49259655bc071c8791aef84
+```
+
+### Lazy stream 与 local cache
+
+一次显式源 probe 被 kill 137，但 cgroup 没有 OOM 记录。根因不是 GPU 或容器内存不足，而是多文件 eager stream 初始化/读取路径不适合该 2.15GB Parquet 网络链路。
+
+改为每次只在消费到对应文件时调用 `load_dataset()`：
+
+```text
+c0b1df1 fix: stream frozen full sources lazily
+targeted: 8 passed
+full: 546 passed
+```
+
+远程 Parquet 首条记录读取仍可能超过 4 分钟并在 SSL body 中断。最终新增 verified local cache：
+
+```text
+c23876c feat: support verified local full source cache
+targeted: 10 passed
+full: 548 passed
+```
+
+下载第一个源文件时多次出现 `peer closed connection`，可恢复 downloader 保留 `.incomplete` 并从已下载 bytes 继续。完成结果：
+
+```text
+DownloadExitCode=0
+DownloadStatus=COMPLETE_AND_VERIFIED
+ResolvedPath=/root/autodl-tmp/day09-source-cache/.../sample/10BT/000_00000.parquet
+ActualBytes=2152819114
+ActualSHA256=b1ba7b2ce4cb5ea6ef42dca40263eabb85f37700d01693a68e9b30a31d78e871
+SourceDownloadIdentity=PASS
+```
+
+断网 local-cache probe 成功读到第一条合格记录：
+
+```text
+AcceptedSourceIndex=1
+AcceptedTextCharacters=3665
+AcceptedProvidedTokens=845
+AcceptedSplit=train
+CleanOfflineLocalCacheProbe=PASS
+```
+
+### Full source corpus
+
+正式构建：
+
+```text
+output=data/processed/fineweb_edu_full
+start=2026-08-13T04:21:46+08:00
+```
+
+统计：
+
+| 指标 | 结果 |
+| --- | ---: |
+| Input records | 339,027 |
+| Kept records | 338,849 |
+| Exact duplicates | 178 |
+| Provided tokens | 350,000,812 |
+| Shard groups | 70 |
+| Train records/tokens | 332,112 / 343,299,897 |
+| Validation records/tokens | 3,407 / 3,452,153 |
+| Test records/tokens | 3,330 / 3,248,762 |
+| Size | 约 1.7 GB |
+
+身份：
+
+```text
+SourceManifestSHA256=14c69dc545838b426e29162c73132cfe444bb2cc56b72c80bb4929f3c65ca96a
+FullFingerprint=555c15b1e851f567290fda3acf7e39245d3bc050c49259655bc071c8791aef84
+```
+
+### 已发布后进程 abort
+
+构建已经写完 70 shards、state `complete` 和 manifest，但 generator teardown 触发 native abort，wrapper 得到 exit 134。
+
+没有删除产物。先对 70 shards 做 canonical recovery：
+
+```text
+CorpusStatus=complete
+VerifiedShards=70
+VerifiedSourceRecords=339027
+VerifiedKeptRecords=338849
+VerifiedProvidedTokens=350000812
+CanonicalRecoveryValidation=PASS
+```
+
+随后给 source stream 增加显式 `finally: close()`，并覆盖 success/failure/non-closeable 三种路径：
+
+```text
+23c63a6 fix: close full corpus source stream
+targeted: 13 passed
+local full: 551 passed in 42.46s
+remote full: 551 passed, 2 warnings in 5.87s
+```
+
+真实 active Parquet 短构建：
+
+```text
+ActiveStreamProbeExit=0
+ProbeStatus=complete
+ProbeProvidedTokens=1900
+ProbeLogContainsAbort=False
+ActiveStreamLifecycleValidation=PASS
+FormalCorpusStillComplete=PASS
+```
+
+### Tokenized Full
+
+正式编码 preflight：
+
+```text
+profile=full
+source manifest SHA-256=14c69dc54583...
+vocabulary=16384
+shard target=5000000
+storage=<u2
+```
+
+运行：
+
+```text
+started=2026-08-13T04:42:43+08:00
+finished=2026-08-13T04:53:38+08:00
+exit=0
+published=data/tokenized/fineweb_edu_full
+staging=ABSENT
+```
+
+结果：
+
+| Split | Records | Provided tokens | Model tokens | Storage shards |
+| --- | ---: | ---: | ---: | ---: |
+| Train | 332,112 | 343,299,897 | 372,328,191 | 75 |
+| Validation | 3,407 | 3,452,153 | 3,741,345 | 1 |
+| Test | 3,330 | 3,248,762 | 3,518,409 | 1 |
+| **合计** | **338,849** | **350,000,812** | **379,587,945** | **77** |
+
+```text
+RawBpeTokens=379249096
+AppendedEOS=338849
+PayloadBytes=759175890
+TokenizedManifestSHA256=ce7cd91075c7c666c427e1aaa286096a7f386643f3a76de3c26ef770d6cce67e
+TokenizedConfigFingerprint=39dab5bacdf8719bbc849e85ddcd7422cba5777fc044b437d050a49b87ab174f
+```
+
+### Tokenized Full 验证
+
+workers 0 全量 manifest/payload/index scan 通过。跨 shard 读取：
+
+```text
+BoundaryTokenOffset=4998983
+BoundaryWindowStart=4998727
+BoundaryReadLength=513
+CrossStorageShardRead=PASS
+CrossStorageShardCausalShift=PASS
+ParentMemmapsClosedAfterBoundaryRead=PASS
+```
+
+workers 2 和 4 在三个 split 均得到 `(16, 512)`，causal shift 和 ID range 正确：
+
+```text
+Workers2And4BatchIdentity=PASS
+AllParentMemmapsClosed=PASS
+FullTokenizedLoaderValidation=PASS
+TokenizedGitIgnoreExit=0
+```
+
+### Full dry-run
+
+Run ID：
+
+```text
+day09-full-one-update-20260813-050032
+```
+
+计划：
+
+```text
+ModelParameters=33833984
+MicroBatchSize=16
+GradientAccumulationSteps=8
+TokensPerUpdate=65536
+TotalUpdates=4578
+WarmupUpdates=92
+PlannedTokens=300023808
+```
+
+Dry-run 确认 Full manifest、Tokenizer、fingerprint、commit、BF16、`(16,512)` 与 causal shift；没有写 run/checkpoint 目录。
+
+### 唯一一次 optimizer update
+
+只执行：
+
+```text
+--stop-at-step 1
+```
+
+结果：
+
+```text
+GlobalStep=1
+TokensSeen=65536
+MicroSteps=8
+Samples=128
+TrainLoss=9.816444397
+LearningRate=3.26086956522e-06
+GradNorm=7.308704853
+TokensPerSecond=58906.051
+Evaluations=0
+Checkpoints=1
+```
+
+GPU 1 秒采样：
+
+```text
+Samples=5
+PeakMemoryMiB=5783
+PeakUtilizationPercent=31
+PeakTemperatureC=35
+PostRunMemoryMiB=0
+```
+
+Checkpoint：
+
+```text
+Path=checkpoints/day09-full-one-update-20260813-050032/step-00000001.pt
+Bytes=406108827
+SHA256=457d12600f143b400e2ab51af549d0bd020badafb5c32c38bb9502a0a254e7e4
+```
+
+CPU `weights_only=True` 核验通过，metrics event order 为：
+
+```text
+run_start -> train_update -> checkpoint
+```
+
+TrainerState 为 step 1 / 8 micro steps / 65,536 tokens / 128 samples / last save step 1 / last eval step 0。没有第二次 update。
+
+### 证据下载
+
+远端证据包：
+
+```text
+Archive=small-gpt-day09-evidence-20260813-051212.tar.gz
+Bytes=63808
+SHA256=0edd992562f64b1bdc156fd5bbb498f087b8de17097b974720b213075058e3a8
+Entries=66
+```
+
+本地三方 hash、bytes 和 required entries 通过：
+
+```text
+ExpectedHash=0edd992562f64b1bdc156fd5bbb498f087b8de17097b974720b213075058e3a8
+ActualHash=0edd992562f64b1bdc156fd5bbb498f087b8de17097b974720b213075058e3a8
+SidecarHash=0edd992562f64b1bdc156fd5bbb498f087b8de17097b974720b213075058e3a8
+ActualBytes=63808
+ArchiveEntries=66
+Day9EvidenceDownloadGate=PASS
+```
+
+证据位于仓库外：
+
+```text
+D:\code\small-gpt-day09-evidence
+```
+
+### Day 9 最终状态
+
+- [x] Full source profile、显式源文件和 local cache 实现；
+- [x] metadata 跨平台身份修复；
+- [x] 2.15GB 源文件 bytes/SHA 验证；
+- [x] 350,000,812 provided-token corpus；
+- [x] 70 source shard groups canonical validation；
+- [x] source stream lifecycle 修复与真实 active probe；
+- [x] 379,587,945-token Tokenized Full；
+- [x] 77 storage shards 完整验证；
+- [x] 跨 shard `T+1` 与 workers 2/4；
+- [x] Full BF16 dry-run；
+- [x] 恰好一次 optimizer update；
+- [x] 严格 checkpoint/identity 验证；
+- [x] 本地/远端 551 项完整回归；
+- [x] 证据下载与三方 SHA；
+- [x] 正式 300M-token 训练未启动。
+
+### 下一阶段硬门
+
+1. 本地完成 Day 9 README、daily log 和执行报告提交；
+2. 普通 push 后核对 `HEAD == origin/main == RemoteMain`；
+3. 证据保全和 Git 闭环完成后关闭 C14，但不释放；
+4. 正式预训练必须创建新 run ID；
+5. 重新验证 Full/tokenizer/Git/GPU identity；
+6. 获得新的 300M-token 长跑授权；
+7. 再启动 4,578-update 正式训练。
