@@ -246,7 +246,7 @@ AutoDL 控制台单价为 ¥2.78/小时，用户给出的本轮上限为 60 分�
 
 1. [x] 应用本次配置/文档更新，完成 83 项定向测试与 531 项完整项目回归；
 2. [x] `git diff --check` 通过，审查 Baseline 只有四个资源字段变化；
-3. [ ] 提交并普通 push，确认 `HEAD == origin/main`；
+3. [x] 功能冻结提交 `9a6f2fed495669b994aa1e85706fe461535e1883` 已普通 push，`HEAD == origin/main == RemoteMain`；
 4. [ ] 构建并验证 Full corpus，恢复 source manifest identity 硬门；
 5. [ ] 使用冻结 Tokenizer 编码 Full，并扫描所有 payload/index identities；
 6. [ ] 根据 Full 实际大小复核 50 GB 持久盘预算；
@@ -273,7 +273,19 @@ git diff --check exit code: 0
 
 应用后的工作区精确包含 6 个修改文件与 1 个新增报告；没有 `data/`、`runs/`、`checkpoints/` 或原始远端证据。Baseline diff 只有 `16 / 8 / 4 / false` 四项资源值变化。
 
-Day 8 当前进度按 96% 记录。GPU 实验、配置冻结与本地回归均已结束，剩余工作只有最终 diff 审查、commit、普通 push 和远端 Git hash 核对。
+功能冻结提交及远端核对结果：
+
+```text
+Commit=9a6f2fed495669b994aa1e85706fe461535e1883
+Message=feat: freeze calibrated baseline resources
+PushExitCode=0
+HEAD=9a6f2fed495669b994aa1e85706fe461535e1883
+origin/main=9a6f2fed495669b994aa1e85706fe461535e1883
+RemoteMain=9a6f2fed495669b994aa1e85706fe461535e1883
+HashesMatch=True
+```
+
+Day 8 当前进度按 100% 记录。GPU 实验、配置冻结、本地回归、功能提交、普通 push 与远端 Git hash 核对全部完成。
 
 ## 最终判定
 
@@ -293,6 +305,6 @@ Day 8 当前进度按 96% 记录。GPU 实验、配置冻结与本地回归均�
 | Full 数据 | NOT STARTED |
 | 300M-token 正式训练 | NOT STARTED |
 | 本地 Stage I 应用与最终回归 | PASS；83 targeted / 531 full / diff-check 0 |
-| commit、push 与远端 hash 核对 | PENDING |
+| 功能提交、push 与远端 hash 核对 | PASS；`9a6f2fe`，三方 hash 一致 |
 
-结论：冻结 `16 / 8 / 4 / false` 有完整的真实 Pilot、显存、吞吐、数值、validation、resume 与本地回归证据支持，可以进入 commit/push；正式 Full 与 300M-token 训练仍是独立后续阶段。
+结论：冻结 `16 / 8 / 4 / false` 有完整的真实 Pilot、显存、吞吐、数值、validation、resume、本地回归与 Git 远端闭环证据支持，Day 8 资源定标正式完成。正式 Full 与 300M-token 训练仍是独立后续阶段。

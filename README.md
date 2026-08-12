@@ -8,7 +8,7 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 当前阶段 | Day 8 RTX 5090 资源定标与本地回归已完成；等待 commit、push 与远端 hash 核对 |
+| 当前阶段 | Day 8 RTX 5090 资源定标、Baseline 配置冻结、本地回归与 Git 远端闭环已完成 |
 | 自动测试 | Day 8 定向测试 `83 passed in 2.41s`；完整回归 `531 passed in 13.95s` |
 | 数据集 | `HuggingFaceFW/fineweb-edu` / `sample-10BT` |
 | 数据访问方式 | 固定 revision 的流式读取 |
@@ -646,7 +646,7 @@ small-gpt/
 - [x] Day 5：构建 tokenized binary、文档索引、Dataset 和 DataLoader
 - [x] Day 6：手写 Causal Self-Attention、Decoder-only GPT 并完成模型验收
 - [x] Day 7：实现训练循环、优化器、调度器、评估、日志与 checkpoint 恢复
-- [ ] Day 8：资源定标、配置冻结与 531 项回归已通过；commit、push 待完成
+- [x] Day 8：资源定标、配置冻结、531 项回归与 Git 远端 hash 核对全部完成
 - [ ] 采集并验证正式训练语料
 - [ ] 在租用 GPU 上完成正式预训练
 - [ ] 实现文本生成与模型评估
@@ -678,4 +678,6 @@ Day 8 的 GPU 实验阶段已经结束。33,833,984 参数 Baseline 已在 RTX 5
 
 真实 Pilot 上的 isolated sweep、BF16 dry-run、25-step 短跑、step 10/20 validation、独立 resume 对照和正式入口 20 → 25 resume 均通过。A57 证据包已在本地核对 SHA，A57 与 F19 均由用户确认关机。
 
-当前 Day 8 按 96% 记录：四字段冻结和报告已经应用，83 项定向测试、531 项完整回归与 `git diff --check` 均通过。剩余工作是最终审查 diff、commit、push 并确认 `HEAD == origin/main`。在 Git 门完成以及 Full corpus 独立验证前，不允许启动 300M-token 正式预训练。当前 Pilot 短跑结果也不能作为模型质量结论。
+Day 8 已按 100% 完成：四字段冻结和报告已经应用，83 项定向测试、531 项完整回归与 `git diff --check` 均通过；功能冻结提交 `9a6f2fed495669b994aa1e85706fe461535e1883` 已普通 push，`HEAD`、`origin/main` 与 GitHub `main` 三方 hash 一致。
+
+后续 Full corpus 构建、tokenized Full 验证和 300M-token 正式预训练是独立阶段，仍须逐项通过硬门并获得新的明确授权。当前 Pilot 短跑结果只能证明训练链路可执行，不能作为模型质量结论。

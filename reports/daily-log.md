@@ -1502,6 +1502,22 @@ git diff --check exit code: 0
 
 工作区范围精确为 6 个修改文件和 1 个新增报告，没有出现 `data/`、`runs/`、`checkpoints/` 或原始远端证据文件。Baseline diff 只有 `micro_batch_size=16`、`gradient_accumulation_steps=8`、`num_workers=4`、`pin_memory=false` 四项变化。
 
+### Stage I commit 与远端闭环
+
+最终功能冻结提交及远端核对结果：
+
+```text
+Commit=9a6f2fed495669b994aa1e85706fe461535e1883
+Message=feat: freeze calibrated baseline resources
+PushExitCode=0
+HEAD=9a6f2fed495669b994aa1e85706fe461535e1883
+origin/main=9a6f2fed495669b994aa1e85706fe461535e1883
+RemoteMain=9a6f2fed495669b994aa1e85706fe461535e1883
+HashesMatch=True
+```
+
+该提交包含 6 个修改文件和 1 个新增执行报告，共 `667 insertions(+), 37 deletions(-)`。普通 push 成功后，本地 `main`、远端跟踪分支 `origin/main` 与 GitHub `main` 已确认一致。
+
 ### Day 8 当前验收状态
 
 - [x] Stage A probe 实现与 531 项回归
@@ -1518,17 +1534,17 @@ git diff --check exit code: 0
 - [x] A57/F19 关机
 - [x] 本地应用 Stage I 配置/文档更新
 - [x] 83 项定向测试与 531 项完整项目回归
-- [ ] commit、push、`HEAD == origin/main`
+- [x] commit、普通 push、`HEAD == origin/main == RemoteMain`
 - [x] Full 未启动
 - [x] 300M-token 正式训练未启动
 
-Day 8 当前进度为 96%。GPU 实验、配置冻结和本地回归已经完成，剩余为最终 diff 审查、commit、push 与远端 hash 核对。
+Day 8 当前进度为 100%。GPU 实验、配置冻结、本地回归、功能提交、普通 push 与远端 hash 核对全部完成。
 
 ### 下一阶段硬门
 
 1. 已完成 Stage I 本地应用、83 项定向测试与 531 项完整回归；
 2. 已确认 Baseline 只有四个资源字段变化；
 3. 已确认 `git diff --check` exit code 为 0；
-4. commit、普通 push 并核对远端 hash；
+4. 已将功能冻结提交 `9a6f2fed495669b994aa1e85706fe461535e1883` 普通 push，并确认三方 hash 一致；
 5. Full corpus 和 tokenized Full 必须独立构建、验证和测量磁盘；
 6. 正式训练前重新核对 GPU/软件/数据身份并获得新的明确授权。
