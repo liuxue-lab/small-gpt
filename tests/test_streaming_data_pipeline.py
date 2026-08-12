@@ -166,28 +166,33 @@ def test_full_stream_uses_explicit_files_without_repository_enumeration(
         PROJECT_ROOT / "configs" / "data_fineweb_edu.yaml",
         "full",
     )
-    captured = {}
-    sentinel = object()
+    calls = []
 
     def fake_load_dataset(*args, **kwargs):
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return sentinel
+        calls.append((args, kwargs))
+        source_url = kwargs["data_files"]["train"][0]
+        return iter([{"source_url": source_url}])
 
     monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com/")
     monkeypatch.setattr("datasets.load_dataset", fake_load_dataset)
 
-    assert open_fineweb_edu_stream(config) is sentinel
-    assert captured["args"] == ("parquet",)
-    assert captured["kwargs"]["split"] == "train"
-    assert captured["kwargs"]["streaming"] is True
-    assert captured["kwargs"]["data_files"] == {
-        "train": [
-            "https://hf-mirror.com/datasets/HuggingFaceFW/fineweb-edu/"
-            f"resolve/{REVISION}/{source_file}"
-            for source_file in EXPECTED_FULL_SOURCE_FILES
-        ]
-    }
+    stream = open_fineweb_edu_stream(config)
+    assert calls == []
+
+    expected_urls = [
+        "https://hf-mirror.com/datasets/HuggingFaceFW/fineweb-edu/"
+        f"resolve/{REVISION}/{source_file}"
+        for source_file in EXPECTED_FULL_SOURCE_FILES
+    ]
+    assert list(stream) == [
+        {"source_url": source_url} for source_url in expected_urls
+    ]
+    assert len(calls) == len(EXPECTED_FULL_SOURCE_FILES)
+    for (args, kwargs), source_url in zip(calls, expected_urls, strict=True):
+        assert args == ("parquet",)
+        assert kwargs["split"] == "train"
+        assert kwargs["streaming"] is True
+        assert kwargs["data_files"] == {"train": [source_url]}
 
 
 def test_full_manifest_records_explicit_source_file_identity(tmp_path):

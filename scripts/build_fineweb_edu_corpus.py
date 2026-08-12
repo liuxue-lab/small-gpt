@@ -808,16 +808,28 @@ def _explicit_source_urls(config: CorpusRunConfig) -> list[str]:
     ]
 
 
-def open_fineweb_edu_stream(config: CorpusRunConfig) -> Iterable[dict[str, Any]]:
+def _iter_explicit_source_stream(
+    config: CorpusRunConfig,
+) -> Iterable[dict[str, Any]]:
+    """Open each frozen remote Parquet file only when it is needed."""
     from datasets import load_dataset
 
-    if config.source_files:
-        return load_dataset(
+    for source_url in _explicit_source_urls(config):
+        source_stream = load_dataset(
             "parquet",
-            data_files={config.dataset_split: _explicit_source_urls(config)},
+            data_files={config.dataset_split: [source_url]},
             split=config.dataset_split,
             streaming=config.streaming,
         )
+        yield from source_stream
+
+
+def open_fineweb_edu_stream(config: CorpusRunConfig) -> Iterable[dict[str, Any]]:
+    if config.source_files:
+        return _iter_explicit_source_stream(config)
+
+    from datasets import load_dataset
+
     return load_dataset(
         config.dataset_name,
         name=config.dataset_configuration,
