@@ -895,6 +895,19 @@ def open_fineweb_edu_stream(config: CorpusRunConfig) -> Iterable[dict[str, Any]]
     )
 
 
+def _build_corpus_with_managed_stream(
+    config: CorpusRunConfig,
+) -> dict[str, Any]:
+    """Build a corpus and deterministically release its source stream."""
+    source_stream = open_fineweb_edu_stream(config)
+    try:
+        return build_corpus(source_stream, config)
+    finally:
+        close_stream = getattr(source_stream, "close", None)
+        if callable(close_stream):
+            close_stream()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -933,7 +946,7 @@ def main() -> None:
         f"Explicit files   : {len(config.source_files)}\n"
         f"Output directory : {config.output_dir}"
     )
-    manifest = build_corpus(open_fineweb_edu_stream(config), config)
+    manifest = _build_corpus_with_managed_stream(config)
     print(json.dumps(manifest["statistics"], ensure_ascii=False, indent=2))
     print(f"Manifest saved to: {config.output_dir / config.manifest_filename}")
 
