@@ -33,6 +33,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASE_CONFIG_PATH = PROJECT_ROOT / "configs" / "tokenized_data.yaml"
 FULL_CONFIG_PATH = PROJECT_ROOT / "configs" / "tokenized_data_full.yaml"
 SPECIAL_IDS = {"bos": 0, "eos": 1, "pad": 2, "unk": 3}
+EXPECTED_FULL_SOURCE_FILES = [
+    f"sample/10BT/{index:03d}_00000.parquet" for index in range(14)
+]
 
 
 class _Encoding:
@@ -255,6 +258,7 @@ def make_synthetic_build(tmp_path: Path) -> SyntheticBuild:
 
 def make_synthetic_full_build(tmp_path: Path) -> SyntheticBuild:
     fixture = make_synthetic_build(tmp_path)
+    expected_source_files = ["synthetic/source-000.parquet"]
     provided_counts = {
         "train": [174_000_000, 174_000_000],
         "validation": [1_000_000],
@@ -327,6 +331,7 @@ def make_synthetic_full_build(tmp_path: Path) -> SyntheticBuild:
             "name": "synthetic",
             "configuration": "offline",
             "revision": "fixed",
+            "source_files": expected_source_files,
         },
         "profile": profile,
         "statistics": {
@@ -351,6 +356,7 @@ def make_synthetic_full_build(tmp_path: Path) -> SyntheticBuild:
         {
             "identity_mode": "capture_complete_manifest",
             "expected_config_fingerprint": fingerprint,
+            "expected_source_files": expected_source_files,
             "expected_profile": profile,
             "manifest_sha256": sha256_file(source_manifest_path),
             "expected_source_shards": 4,
@@ -473,6 +479,9 @@ def test_full_config_is_manifest_bound_without_placeholder_identity():
     assert config["source"]["expected_config_fingerprint"] == (
         source_config_fingerprint(source_run)
     )
+    assert config["source"]["expected_source_files"] == (
+        EXPECTED_FULL_SOURCE_FILES
+    )
     assert config["statistics"] == {
         "mode": "source_manifest_observed",
         "require_zero_unknown_tokens": True,
@@ -552,6 +561,21 @@ def test_full_source_manifest_rejects_build_identity_drift(tmp_path):
     with pytest.raises(
         TokenizationBuildError,
         match="configuration fingerprint mismatch",
+    ):
+        tokenization_module._validate_source_manifest_identity(
+            fixture.config,
+            drifted,
+            profile="full",
+        )
+
+
+def test_full_source_manifest_rejects_explicit_source_file_drift(tmp_path):
+    fixture = make_synthetic_full_build(tmp_path)
+    drifted = copy.deepcopy(fixture.context.source_manifest)
+    drifted["dataset"]["source_files"] = ["synthetic/other.parquet"]
+    with pytest.raises(
+        TokenizationBuildError,
+        match="file list does not match",
     ):
         tokenization_module._validate_source_manifest_identity(
             fixture.config,

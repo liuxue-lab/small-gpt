@@ -1,5 +1,6 @@
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,11 +12,22 @@ from scripts.build_fineweb_edu_corpus import (
     build_corpus,
     config_fingerprint,
     load_run_config,
+    open_fineweb_edu_stream,
 )
 from scripts.prepare_data import SPLIT_NAMES, file_sha256
 
 
 REVISION = "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_FULL_SOURCE_FILES = tuple(
+    f"sample/10BT/{index:03d}_00000.parquet" for index in range(14)
+)
+FROZEN_PILOT_FINGERPRINT = (
+    "94cd699e69c5ede36601b71ee95f3397bb5714f22f0efa9d53208af12d30a513"
+)
+FROZEN_FULL_FINGERPRINT = (
+    "555c15b1e851f567290fda3acf7e39245d3bc050c49259655bc071c8791aef84"
+)
 
 
 def write_config(path: Path, output_dir: Path) -> Path:
@@ -133,6 +145,87 @@ def test_load_run_config_applies_bounded_overrides(tmp_path):
     assert config.estimated_shards == 3
     assert config.save_raw_records is False
     assert len(config_fingerprint(config)) == 64
+
+
+def test_full_profile_freezes_explicit_revision_bound_source_files():
+    config_path = PROJECT_ROOT / "configs" / "data_fineweb_edu.yaml"
+    pilot = load_run_config(config_path, "pilot")
+    full = load_run_config(config_path, "full")
+
+    assert pilot.source_files == ()
+    assert config_fingerprint(pilot) == FROZEN_PILOT_FINGERPRINT
+    assert full.output_dir == Path("data/processed/fineweb_edu_full")
+    assert full.source_files == EXPECTED_FULL_SOURCE_FILES
+    assert config_fingerprint(full) == FROZEN_FULL_FINGERPRINT
+
+
+def test_full_stream_uses_explicit_files_without_repository_enumeration(
+    monkeypatch,
+):
+    config = load_run_config(
+        PROJECT_ROOT / "configs" / "data_fineweb_edu.yaml",
+        "full",
+    )
+    captured = {}
+    sentinel = object()
+
+    def fake_load_dataset(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return sentinel
+
+    monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com/")
+    monkeypatch.setattr("datasets.load_dataset", fake_load_dataset)
+
+    assert open_fineweb_edu_stream(config) is sentinel
+    assert captured["args"] == ("parquet",)
+    assert captured["kwargs"]["split"] == "train"
+    assert captured["kwargs"]["streaming"] is True
+    assert captured["kwargs"]["data_files"] == {
+        "train": [
+            "https://hf-mirror.com/datasets/HuggingFaceFW/fineweb-edu/"
+            f"resolve/{REVISION}/{source_file}"
+            for source_file in EXPECTED_FULL_SOURCE_FILES
+        ]
+    }
+
+
+def test_full_manifest_records_explicit_source_file_identity(tmp_path):
+    full = load_run_config(
+        PROJECT_ROOT / "configs" / "data_fineweb_edu.yaml",
+        "full",
+    )
+    config = replace(
+        full,
+        target_provided_tokens=200,
+        shard_target_provided_tokens=200,
+        estimated_shards=1,
+        output_dir=tmp_path / "full-corpus",
+    )
+
+    manifest = build_corpus([make_record(0), make_record(1)], config)
+
+    assert manifest["status"] == "complete"
+    assert manifest["dataset"]["source_files"] == list(
+        EXPECTED_FULL_SOURCE_FILES
+    )
+
+
+def test_full_source_file_validation_rejects_duplicates():
+    full = load_run_config(
+        PROJECT_ROOT / "configs" / "data_fineweb_edu.yaml",
+        "full",
+    )
+    duplicate = replace(
+        full,
+        source_files=(
+            "sample/10BT/000_00000.parquet",
+            "sample/10BT/000_00000.parquet",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="duplicates"):
+        duplicate.validate()
 
 
 def test_build_corpus_filters_deduplicates_and_writes_verified_shards(tmp_path):

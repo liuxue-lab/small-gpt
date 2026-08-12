@@ -34,6 +34,22 @@ profiles:
     target_provided_tokens: 350000000
     shard_target_provided_tokens: 5000000
     estimated_shards: 70
+    output_dir: data/processed/fineweb_edu_full
+    source_files:
+      - sample/10BT/000_00000.parquet
+      - sample/10BT/001_00000.parquet
+      - sample/10BT/002_00000.parquet
+      - sample/10BT/003_00000.parquet
+      - sample/10BT/004_00000.parquet
+      - sample/10BT/005_00000.parquet
+      - sample/10BT/006_00000.parquet
+      - sample/10BT/007_00000.parquet
+      - sample/10BT/008_00000.parquet
+      - sample/10BT/009_00000.parquet
+      - sample/10BT/010_00000.parquet
+      - sample/10BT/011_00000.parquet
+      - sample/10BT/012_00000.parquet
+      - sample/10BT/013_00000.parquet
 
 storage:
   estimated_bytes_per_provided_token: 4.99

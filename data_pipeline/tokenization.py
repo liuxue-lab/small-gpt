@@ -8,7 +8,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 import numpy as np
@@ -145,6 +145,28 @@ def _sha256_string(value: Any, field: str) -> str:
     return digest
 
 
+def _source_file_list(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list) or not value:
+        raise TokenizedDataConfigError(f"{field} must be a non-empty list")
+    normalized: list[str] = []
+    for index, raw_path in enumerate(value):
+        source_file = _nonempty_string(raw_path, f"{field}[{index}]")
+        path = PurePosixPath(source_file)
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or path.as_posix() != source_file
+            or path.suffix != ".parquet"
+        ):
+            raise TokenizedDataConfigError(
+                f"{field}[{index}] must be a normalized relative Parquet path"
+            )
+        normalized.append(source_file)
+    if len(normalized) != len(set(normalized)):
+        raise TokenizedDataConfigError(f"{field} must not contain duplicates")
+    return normalized
+
+
 def _require_equal(actual: Any, expected: Any, field: str) -> None:
     if actual != expected:
         raise TokenizedDataConfigError(
@@ -229,6 +251,10 @@ def validate_tokenized_data_config(config: Mapping[str, Any]) -> None:
         _sha256_string(
             source.get("expected_config_fingerprint"),
             "source.expected_config_fingerprint",
+        )
+        _source_file_list(
+            source.get("expected_source_files"),
+            "source.expected_source_files",
         )
         expected_profile = _mapping(
             source.get("expected_profile"),
@@ -865,6 +891,11 @@ def _validate_source_manifest_identity(
     if profile == ALLOWED_PROFILE:
         return
 
+    expected_source_files = list(config["source"]["expected_source_files"])
+    if dataset.get("source_files") != expected_source_files:
+        raise TokenizationBuildError(
+            "Full source manifest file list does not match the frozen source files"
+        )
     expected_fingerprint = config["source"]["expected_config_fingerprint"]
     if manifest.get("config_fingerprint") != expected_fingerprint:
         raise TokenizationBuildError(

@@ -6,6 +6,9 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_CONFIG_PATH = PROJECT_ROOT / "configs" / "data_fineweb_edu.yaml"
+EXPECTED_FULL_SOURCE_FILES = [
+    f"sample/10BT/{index:03d}_00000.parquet" for index in range(14)
+]
 
 
 def load_data_config() -> dict:
@@ -55,6 +58,8 @@ def test_pilot_and_full_collection_budgets():
     assert full["target_provided_tokens"] == 350_000_000
     assert full["shard_target_provided_tokens"] == 5_000_000
     assert full["estimated_shards"] == 70
+    assert full["output_dir"] == "data/processed/fineweb_edu_full"
+    assert full["source_files"] == EXPECTED_FULL_SOURCE_FILES
 
 
 def test_output_and_storage_budget():

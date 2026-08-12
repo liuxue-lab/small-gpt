@@ -8,7 +8,22 @@ source:
   corpus_dir: data/processed/fineweb_edu_full
   manifest: data/processed/fineweb_edu_full/manifest.json
   identity_mode: capture_complete_manifest
-  expected_config_fingerprint: 90285a82d78c85c60ad113442902a39ea3e7d0b32589d00d0d206d2e77c93ca5
+  expected_config_fingerprint: 555c15b1e851f567290fda3acf7e39245d3bc050c49259655bc071c8791aef84
+  expected_source_files:
+    - sample/10BT/000_00000.parquet
+    - sample/10BT/001_00000.parquet
+    - sample/10BT/002_00000.parquet
+    - sample/10BT/003_00000.parquet
+    - sample/10BT/004_00000.parquet
+    - sample/10BT/005_00000.parquet
+    - sample/10BT/006_00000.parquet
+    - sample/10BT/007_00000.parquet
+    - sample/10BT/008_00000.parquet
+    - sample/10BT/009_00000.parquet
+    - sample/10BT/010_00000.parquet
+    - sample/10BT/011_00000.parquet
+    - sample/10BT/012_00000.parquet
+    - sample/10BT/013_00000.parquet
   expected_profile:
     name: full
     target_provided_tokens: 350000000

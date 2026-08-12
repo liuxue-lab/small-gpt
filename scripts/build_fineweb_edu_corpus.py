@@ -9,8 +9,9 @@ import re
 import shutil
 from collections import Counter
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, TextIO
+from urllib.parse import quote, urlsplit
 
 import yaml
 
@@ -69,6 +70,7 @@ class CorpusRunConfig:
     output_format: str
     encoding: str
     save_raw_records: bool
+    source_files: tuple[str, ...] = ()
 
     def validate(self) -> None:
         self.cleaning.validate()
@@ -101,6 +103,23 @@ class CorpusRunConfig:
             raise ValueError("manifest_filename must be a JSON filename")
         if not self.state_filename.endswith(".json"):
             raise ValueError("state_filename must be a JSON filename")
+        if self.profile == "full" and not self.source_files:
+            raise ValueError("the Full profile requires explicit source_files")
+        if len(self.source_files) != len(set(self.source_files)):
+            raise ValueError("source_files must not contain duplicates")
+        for index, source_file in enumerate(self.source_files):
+            path = PurePosixPath(source_file)
+            if (
+                not source_file
+                or path.is_absolute()
+                or ".." in path.parts
+                or path.as_posix() != source_file
+                or path.suffix != ".parquet"
+            ):
+                raise ValueError(
+                    f"source_files[{index}] must be a normalized relative "
+                    f"Parquet path: {source_file!r}"
+                )
 
 
 @dataclass
@@ -145,6 +164,13 @@ def load_run_config(
         )
     selected_profile = _require_mapping(profiles[profile], f"profiles.{profile}")
 
+    raw_source_files = selected_profile.get("source_files", [])
+    if not isinstance(raw_source_files, list) or any(
+        not isinstance(item, str) for item in raw_source_files
+    ):
+        raise TypeError(f"profiles.{profile}.source_files must be a list of strings")
+    source_files = tuple(raw_source_files)
+
     cleaning_config = CleaningConfig(
         min_characters=int(cleaning["min_characters"]),
         min_language_score=float(cleaning["min_language_score"]),
@@ -187,13 +213,14 @@ def load_run_config(
         output_dir=(
             output_dir_override
             if output_dir_override is not None
-            else Path(str(output["directory"]))
+            else Path(str(selected_profile.get("output_dir", output["directory"])))
         ),
         manifest_filename=str(output["manifest_filename"]),
         state_filename=str(output["state_filename"]),
         output_format=str(output["format"]),
         encoding=str(output["encoding"]),
         save_raw_records=bool(output["save_raw_records"]),
+        source_files=source_files,
     )
     run_config.validate()
 
@@ -211,15 +238,18 @@ def load_run_config(
 
 
 def config_fingerprint(config: CorpusRunConfig) -> str:
+    dataset_identity: dict[str, Any] = {
+        "name": config.dataset_name,
+        "configuration": config.dataset_configuration,
+        "split": config.dataset_split,
+        "revision": config.dataset_revision,
+        "streaming": config.streaming,
+    }
+    if config.source_files:
+        dataset_identity["source_files"] = list(config.source_files)
     payload = {
         "schema_version": SCHEMA_VERSION,
-        "dataset": {
-            "name": config.dataset_name,
-            "configuration": config.dataset_configuration,
-            "split": config.dataset_split,
-            "revision": config.dataset_revision,
-            "streaming": config.streaming,
-        },
+        "dataset": dataset_identity,
         "cleaning": asdict(config.cleaning),
         "profile": config.profile,
         "target_provided_tokens": config.target_provided_tokens,
@@ -466,17 +496,20 @@ def _manifest_payload(
     recovery: RecoveryState,
     status: str,
 ) -> dict[str, Any]:
+    dataset_identity: dict[str, Any] = {
+        "name": config.dataset_name,
+        "configuration": config.dataset_configuration,
+        "split": config.dataset_split,
+        "revision": config.dataset_revision,
+        "streaming": config.streaming,
+    }
+    if config.source_files:
+        dataset_identity["source_files"] = list(config.source_files)
     return {
         "schema_version": SCHEMA_VERSION,
         "status": status,
         "config_fingerprint": config_fingerprint(config),
-        "dataset": {
-            "name": config.dataset_name,
-            "configuration": config.dataset_configuration,
-            "split": config.dataset_split,
-            "revision": config.dataset_revision,
-            "streaming": config.streaming,
-        },
+        "dataset": dataset_identity,
         "profile": {
             "name": config.profile,
             "target_provided_tokens": config.target_provided_tokens,
@@ -761,9 +794,30 @@ def build_corpus(
     return manifest
 
 
+def _explicit_source_urls(config: CorpusRunConfig) -> list[str]:
+    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
+    parsed_endpoint = urlsplit(endpoint)
+    if parsed_endpoint.scheme not in {"http", "https"} or not parsed_endpoint.netloc:
+        raise ValueError(f"HF_ENDPOINT is not a valid HTTP(S) endpoint: {endpoint!r}")
+    dataset = quote(config.dataset_name, safe="/")
+    revision = quote(config.dataset_revision, safe="")
+    return [
+        f"{endpoint}/datasets/{dataset}/resolve/{revision}/"
+        f"{quote(source_file, safe='/')}"
+        for source_file in config.source_files
+    ]
+
+
 def open_fineweb_edu_stream(config: CorpusRunConfig) -> Iterable[dict[str, Any]]:
     from datasets import load_dataset
 
+    if config.source_files:
+        return load_dataset(
+            "parquet",
+            data_files={config.dataset_split: _explicit_source_urls(config)},
+            split=config.dataset_split,
+            streaming=config.streaming,
+        )
     return load_dataset(
         config.dataset_name,
         name=config.dataset_configuration,
@@ -808,6 +862,7 @@ def main() -> None:
         f"Profile          : {config.profile}\n"
         f"Target tokens    : {config.target_provided_tokens}\n"
         f"Shard target     : {config.shard_target_provided_tokens}\n"
+        f"Explicit files   : {len(config.source_files)}\n"
         f"Output directory : {config.output_dir}"
     )
     manifest = build_corpus(open_fineweb_edu_stream(config), config)
