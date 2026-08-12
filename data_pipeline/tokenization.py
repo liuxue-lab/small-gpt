@@ -612,6 +612,47 @@ def _verify_file_identity(path: Path, expected_sha256: str, label: str) -> None:
         )
 
 
+def _verify_tokenizer_metadata_identity(path: Path, expected_sha256: str) -> None:
+    """Verify metadata across Git's platform-dependent text line endings.
+
+    The frozen Day 4 metadata digest was recorded from a CRLF working tree. Git
+    materializes the same tracked JSON with LF on Linux, so first preserve strict
+    raw-byte verification and then allow only an LF/CRLF normalization fallback.
+    All non-newline content remains covered by SHA-256.
+    """
+
+    if not path.is_file():
+        raise TokenizationBuildError(f"tokenizer metadata does not exist: {path}")
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise TokenizationBuildError(
+            f"cannot read tokenizer metadata from {path}: {exc}"
+        ) from exc
+
+    raw_sha256 = hashlib.sha256(payload).hexdigest()
+    if raw_sha256 == expected_sha256:
+        return
+
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise TokenizationBuildError(
+            f"tokenizer metadata is not valid UTF-8: {path}: {exc}"
+        ) from exc
+    normalized_lf = text.replace("\r\n", "\n").replace("\r", "\n")
+    canonical_lf = normalized_lf.encode("utf-8")
+    canonical_crlf = normalized_lf.replace("\n", "\r\n").encode("utf-8")
+    canonical_lf_sha256 = hashlib.sha256(canonical_lf).hexdigest()
+    canonical_crlf_sha256 = hashlib.sha256(canonical_crlf).hexdigest()
+    if expected_sha256 not in (canonical_lf_sha256, canonical_crlf_sha256):
+        raise TokenizationBuildError(
+            f"tokenizer metadata SHA-256 mismatch for {path}: found raw "
+            f"{raw_sha256}, canonical LF {canonical_lf_sha256}, and canonical "
+            f"CRLF {canonical_crlf_sha256}; expected {expected_sha256}"
+        )
+
+
 def _validate_output_paths(
     project_root: Path,
     output_dir: Path,
@@ -1099,10 +1140,9 @@ def prepare_build_context(
     )
 
     _verify_file_identity(tokenizer_path, config["tokenizer"]["sha256"], "tokenizer")
-    _verify_file_identity(
+    _verify_tokenizer_metadata_identity(
         tokenizer_metadata_path,
         config["tokenizer"]["metadata_sha256"],
-        "tokenizer metadata",
     )
     expected_library_version = config["tokenizer"]["library"]["version"]
     if tokenizers_library.__version__ != expected_library_version:
@@ -2277,13 +2317,12 @@ def _verify_manifest_identities(
         _sha256_string(tokenizer.get("sha256"), "manifest.tokenizer.sha256"),
         "tokenizer",
     )
-    _verify_file_identity(
+    _verify_tokenizer_metadata_identity(
         metadata_path,
         _sha256_string(
             tokenizer.get("metadata_sha256"),
             "manifest.tokenizer.metadata_sha256",
         ),
-        "tokenizer metadata",
     )
 
 

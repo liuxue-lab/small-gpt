@@ -424,6 +424,36 @@ def test_pilot_fingerprint_remains_frozen():
     )
 
 
+def test_tokenizer_metadata_identity_accepts_only_line_ending_normalization(
+    tmp_path,
+):
+    metadata_path = tmp_path / "tokenizer_config.json"
+    lf_payload = b'{\n  "schema_version": 1,\n  "name": "frozen"\n}\n'
+    crlf_payload = lf_payload.replace(b"\n", b"\r\n")
+    expected_sha256 = hashlib.sha256(crlf_payload).hexdigest()
+    metadata_path.write_bytes(lf_payload)
+
+    tokenization_module._verify_tokenizer_metadata_identity(
+        metadata_path,
+        expected_sha256,
+    )
+    metadata_path.write_bytes(crlf_payload)
+    tokenization_module._verify_tokenizer_metadata_identity(
+        metadata_path,
+        hashlib.sha256(lf_payload).hexdigest(),
+    )
+
+    metadata_path.write_bytes(lf_payload.replace(b'"frozen"', b'"changed"'))
+    with pytest.raises(
+        TokenizationBuildError,
+        match="canonical CRLF",
+    ):
+        tokenization_module._verify_tokenizer_metadata_identity(
+            metadata_path,
+            expected_sha256,
+        )
+
+
 def test_full_config_is_manifest_bound_without_placeholder_identity():
     config = load_tokenized_data_config(FULL_CONFIG_PATH)
     source_run = load_source_run_config(
