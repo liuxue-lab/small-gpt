@@ -42,6 +42,7 @@ from .dataset import (
 )
 from .tokenization import (
     ALLOWED_PROFILE,
+    ALLOWED_PROFILES,
     ALLOWED_SPLITS,
     BuildContext,
     BuildResult,
@@ -63,6 +64,7 @@ from .tokenization import (
 
 __all__ = [
     "ALLOWED_PROFILE",
+    "ALLOWED_PROFILES",
     "ALLOWED_SPLITS",
     "INDEX_ENTRY_BYTES",
     "INDEX_ENTRY_STRUCT",
@@ -117,4 +119,3 @@ __all__ = [
     "validate_token_shard",
     "validate_tokenized_data_config",
 ]
-

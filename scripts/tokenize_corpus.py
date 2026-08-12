@@ -1,4 +1,4 @@
-"""Build the frozen FineWeb-Edu Pilot tokenized corpus."""
+"""Build a frozen FineWeb-Edu Pilot or manifest-bound Full token corpus."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from data_pipeline import (  # noqa: E402
+    ALLOWED_PROFILES,
     TokenizedDataError,
     build_tokenized_corpus,
     preflight_summary,
@@ -19,23 +20,32 @@ from data_pipeline import (  # noqa: E402
 )
 
 
+DEFAULT_CONFIGS = {
+    "pilot": "configs/tokenized_data.yaml",
+    "full": "configs/tokenized_data_full.yaml",
+}
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Encode the frozen FineWeb-Edu Pilot corpus into resumable "
+            "Encode a verified FineWeb-Edu corpus into resumable "
             "little-endian uint16 token and document-index shards."
         )
     )
     parser.add_argument(
         "--config",
-        default="configs/tokenized_data.yaml",
-        help="Tokenized-data YAML configuration relative to the project root.",
+        default=None,
+        help=(
+            "Tokenized-data YAML configuration relative to the project root. "
+            "Defaults to the frozen config for the selected profile."
+        ),
     )
     parser.add_argument(
         "--profile",
-        choices=("pilot",),
+        choices=ALLOWED_PROFILES,
         default="pilot",
-        help="Executable data profile. Day 5 intentionally exposes Pilot only.",
+        help="Executable data profile: frozen Pilot or manifest-bound Full.",
     )
     parser.add_argument(
         "--output-dir",
@@ -59,8 +69,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def run(args: argparse.Namespace) -> int:
+    config_path = args.config or DEFAULT_CONFIGS[args.profile]
     context = prepare_build_context(
-        args.config,
+        config_path,
         project_root=PROJECT_ROOT,
         profile=args.profile,
         output_dir_override=args.output_dir,
@@ -102,4 +113,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

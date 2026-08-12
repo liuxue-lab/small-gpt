@@ -5,24 +5,33 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
+import yaml
 
+import data_pipeline.tokenization as tokenization_module
 from data_pipeline import (
     BuildContext,
     ControlledInterruption,
     ResumeStateError,
     TokenizationBuildError,
+    TokenizedDataConfigError,
     build_tokenized_corpus,
     config_fingerprint,
     load_tokenized_data_config,
     map_token_payload,
+    prepare_build_context,
     read_token_header,
     sha256_file,
     validate_completed_corpus,
+)
+from scripts.build_fineweb_edu_corpus import (
+    config_fingerprint as source_config_fingerprint,
+    load_run_config as load_source_run_config,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BASE_CONFIG_PATH = PROJECT_ROOT / "configs" / "tokenized_data.yaml"
+FULL_CONFIG_PATH = PROJECT_ROOT / "configs" / "tokenized_data_full.yaml"
 SPECIAL_IDS = {"bos": 0, "eos": 1, "pad": 2, "unk": 3}
 
 
@@ -37,6 +46,13 @@ class DummyTokenizer:
     def encode(self, text, add_special_tokens=False):
         assert add_special_tokens is False
         return _Encoding([100 + (ord(character) % 97) for character in text])
+
+    def get_vocab_size(self, with_added_tokens=True):
+        assert with_added_tokens is True
+        return 16_384
+
+    def token_to_id(self, token):
+        return {"<bos>": 0, "<eos>": 1, "<pad>": 2, "<unk>": 3}.get(token)
 
 
 @dataclass(frozen=True)
@@ -237,6 +253,143 @@ def make_synthetic_build(tmp_path: Path) -> SyntheticBuild:
     return SyntheticBuild(root, config, context, source_records)
 
 
+def make_synthetic_full_build(tmp_path: Path) -> SyntheticBuild:
+    fixture = make_synthetic_build(tmp_path)
+    provided_counts = {
+        "train": [174_000_000, 174_000_000],
+        "validation": [1_000_000],
+        "test": [1_000_000],
+    }
+    for split, records in fixture.records.items():
+        for record, provided_count in zip(records, provided_counts[split], strict=True):
+            record["provided_token_count"] = provided_count
+
+    fingerprint = "a" * 64
+    profile = {
+        "name": "full",
+        "target_provided_tokens": 350_000_000,
+        "shard_target_provided_tokens": 5_000_000,
+        "estimated_shards": 70,
+    }
+    shards = []
+    split_records = {split: 0 for split in fixture.records}
+    split_tokens = {split: 0 for split in fixture.records}
+    for shard_index in range(4):
+        files = {}
+        local_records = {split: 0 for split in fixture.records}
+        local_tokens = {split: 0 for split in fixture.records}
+        for split, records in fixture.records.items():
+            path = fixture.context.source_files[split][shard_index]
+            if split == "train" and shard_index < 2:
+                record = records[shard_index]
+            elif split == "validation" and shard_index == 2:
+                record = records[0]
+            elif split == "test" and shard_index == 3:
+                record = records[0]
+            else:
+                record = None
+            _write_source_record(path, record)
+            count = int(record is not None)
+            provided = int(record["provided_token_count"]) if record else 0
+            local_records[split] = count
+            local_tokens[split] = provided
+            split_records[split] += count
+            split_tokens[split] += provided
+            files[split] = {
+                "path": path.relative_to(fixture.context.corpus_dir).as_posix(),
+                "bytes": path.stat().st_size,
+                "sha256": sha256_file(path),
+                "records": count,
+                "provided_tokens": provided,
+            }
+        shards.append(
+            {
+                "schema_version": 1,
+                "config_fingerprint": fingerprint,
+                "shard_index": shard_index,
+                "source_records_start_exclusive": shard_index,
+                "source_records_end_inclusive": shard_index + 1,
+                "input_records": 1,
+                "kept_records": sum(local_records.values()),
+                "kept_provided_tokens": sum(local_tokens.values()),
+                "split_records": local_records,
+                "split_provided_tokens": local_tokens,
+                "removal_counts": {},
+                "files": files,
+            }
+        )
+
+    source_manifest = {
+        "schema_version": 1,
+        "status": "complete",
+        "config_fingerprint": fingerprint,
+        "dataset": {
+            "name": "synthetic",
+            "configuration": "offline",
+            "revision": "fixed",
+        },
+        "profile": profile,
+        "statistics": {
+            "input_records": 4,
+            "kept_records": 4,
+            "kept_provided_tokens": 350_000_000,
+            "removal_counts": {},
+            "split_records": split_records,
+            "split_provided_tokens": split_tokens,
+            "retention_rate": 1.0,
+        },
+        "shards": shards,
+    }
+    source_manifest_path = fixture.context.source_manifest_path
+    source_manifest_path.write_text(
+        json.dumps(source_manifest, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    config = copy.deepcopy(fixture.config)
+    config["source"].update(
+        {
+            "identity_mode": "capture_complete_manifest",
+            "expected_config_fingerprint": fingerprint,
+            "expected_profile": profile,
+            "manifest_sha256": sha256_file(source_manifest_path),
+            "expected_source_shards": 4,
+        }
+    )
+    pilot_profile = config["profiles"]["pilot"]
+    config["profiles"] = {
+        "full": {
+            **pilot_profile,
+            "output_dir": "data/tokenized/full-run-a",
+            "staging_dir": "data/tokenized/.full-run-a.inprogress",
+        }
+    }
+    config.pop("expected")
+    config["statistics"] = {
+        "mode": "source_manifest_observed",
+        "require_zero_unknown_tokens": True,
+    }
+    config["fingerprint"]["exclude_runtime_fields"] = [
+        "profiles.full.output_dir",
+        "profiles.full.staging_dir",
+        "cli.resume",
+        "cli.no_progress",
+    ]
+
+    output_dir = fixture.root / "data" / "tokenized" / "full-run-a"
+    context = replace(
+        fixture.context,
+        config=config,
+        config_path=fixture.root / "configs" / "tokenized_data_full.yaml",
+        profile="full",
+        fingerprint=config_fingerprint(config),
+        output_dir=output_dir,
+        staging_dir=output_dir.with_name(".full-run-a.inprogress"),
+        source_manifest=source_manifest,
+    )
+    return SyntheticBuild(fixture.root, config, context, fixture.records)
+
+
 def _snapshot(directory: Path) -> dict[str, str]:
     return {
         path.relative_to(directory).as_posix(): sha256_file(path)
@@ -262,6 +415,173 @@ def test_config_fingerprint_ignores_order_and_runtime_paths(tmp_path):
     semantic_change = copy.deepcopy(fixture.config)
     semantic_change["profiles"]["pilot"]["target_model_tokens_per_shard"] = 515
     assert config_fingerprint(semantic_change) != first
+
+
+def test_pilot_fingerprint_remains_frozen():
+    config = load_tokenized_data_config(BASE_CONFIG_PATH)
+    assert config_fingerprint(config) == (
+        "a3eb6012c1cb3e2dab2a7839bebb04530563b19b4d5f7d8022e3c121b13ca7f3"
+    )
+
+
+def test_full_config_is_manifest_bound_without_placeholder_identity():
+    config = load_tokenized_data_config(FULL_CONFIG_PATH)
+    source_run = load_source_run_config(
+        PROJECT_ROOT / "configs" / "data_fineweb_edu.yaml",
+        "full",
+    )
+    assert set(config["profiles"]) == {"full"}
+    assert config["source"]["identity_mode"] == "capture_complete_manifest"
+    assert "manifest_sha256" not in config["source"]
+    assert "expected_source_shards" not in config["source"]
+    assert config["source"]["expected_profile"] == {
+        "name": "full",
+        "target_provided_tokens": 350_000_000,
+        "shard_target_provided_tokens": 5_000_000,
+        "estimated_shards": 70,
+    }
+    assert config["source"]["expected_config_fingerprint"] == (
+        source_config_fingerprint(source_run)
+    )
+    assert config["statistics"] == {
+        "mode": "source_manifest_observed",
+        "require_zero_unknown_tokens": True,
+    }
+    with pytest.raises(TokenizedDataConfigError, match="must be resolved"):
+        config_fingerprint(config)
+
+
+def test_prepare_full_context_captures_complete_source_identity(
+    tmp_path,
+    monkeypatch,
+):
+    fixture = make_synthetic_full_build(tmp_path)
+    metadata = {
+        "schema_version": 1,
+        "library": fixture.config["tokenizer"]["library"],
+        "tokenizer": {
+            "vocab_size": 16_384,
+            "normalizer": "nfc",
+            "special_tokens": [
+                {"name": name, "token": item["token"], "id": item["id"]}
+                for name, item in fixture.config["tokenizer"][
+                    "special_tokens"
+                ].items()
+            ],
+        },
+        "document_boundaries": {
+            "append_eos_per_document": True,
+            "add_bos": False,
+        },
+    }
+    fixture.context.tokenizer_metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    static_config = copy.deepcopy(fixture.config)
+    static_config["source"].pop("manifest_sha256")
+    static_config["source"].pop("expected_source_shards")
+    static_config["tokenizer"]["metadata_sha256"] = sha256_file(
+        fixture.context.tokenizer_metadata_path
+    )
+    config_path = fixture.root / "configs" / "tokenized_data_full.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        yaml.safe_dump(static_config, sort_keys=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        tokenization_module,
+        "load_tokenizer",
+        lambda _path: DummyTokenizer(),
+    )
+    monkeypatch.setattr(
+        tokenization_module.tokenizers_library,
+        "__version__",
+        "0.23.1",
+    )
+
+    context = prepare_build_context(
+        config_path,
+        project_root=fixture.root,
+        profile="full",
+    )
+    assert context.config["source"]["manifest_sha256"] == sha256_file(
+        fixture.context.source_manifest_path
+    )
+    assert context.config["source"]["expected_source_shards"] == 4
+    assert context.fingerprint == config_fingerprint(context.config)
+    assert context.source_manifest["profile"]["name"] == "full"
+
+
+def test_full_source_manifest_rejects_build_identity_drift(tmp_path):
+    fixture = make_synthetic_full_build(tmp_path)
+    drifted = copy.deepcopy(fixture.context.source_manifest)
+    drifted["config_fingerprint"] = "b" * 64
+    with pytest.raises(
+        TokenizationBuildError,
+        match="configuration fingerprint mismatch",
+    ):
+        tokenization_module._validate_source_manifest_identity(
+            fixture.config,
+            drifted,
+            profile="full",
+        )
+
+
+def test_full_build_uses_source_counts_and_observes_token_statistics(tmp_path):
+    fixture = make_synthetic_full_build(tmp_path)
+    result = build_tokenized_corpus(fixture.context)
+
+    assert result.manifest["profile"] == "full"
+    assert result.manifest["totals"]["records"] == 4
+    assert result.manifest["totals"]["provided_tokens"] == 350_000_000
+    assert result.manifest["totals"]["raw_bpe_tokens"] == 2_100
+    assert result.manifest["totals"]["model_tokens"] == 2_104
+    assert result.manifest["totals"]["unknown_tokens"] == 0
+    assert result.manifest["source"]["config_fingerprint"] == "a" * 64
+    assert result.manifest["source"]["profile"] == fixture.context.source_manifest[
+        "profile"
+    ]
+    assert result.manifest["source"]["statistics"] == {
+        "split_records": {"train": 2, "validation": 1, "test": 1},
+        "split_provided_tokens": {
+            "train": 348_000_000,
+            "validation": 1_000_000,
+            "test": 1_000_000,
+        },
+    }
+
+    second = build_tokenized_corpus(fixture.context)
+    assert second.already_complete is True
+    assert second.manifest == result.manifest
+
+
+def test_full_build_rejects_source_manifest_count_mismatch(tmp_path):
+    fixture = make_synthetic_full_build(tmp_path)
+    fixture.context.source_manifest["statistics"]["split_records"]["train"] = 3
+    with pytest.raises(
+        TokenizationBuildError,
+        match="train source contains 2 records; expected 3",
+    ):
+        build_tokenized_corpus(fixture.context)
+
+
+def test_full_output_rejects_source_manifest_identity_drift(tmp_path):
+    fixture = make_synthetic_full_build(tmp_path)
+    result = build_tokenized_corpus(fixture.context)
+    fixture.context.source_manifest_path.write_text(
+        fixture.context.source_manifest_path.read_text(encoding="utf-8") + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TokenizationBuildError, match="source manifest SHA-256 mismatch"):
+        validate_completed_corpus(
+            result.output_dir / "manifest.json",
+            project_root=fixture.root,
+            verify_identities=True,
+            scan_payload=True,
+        )
 
 
 def test_build_conserves_splits_and_keeps_oversize_document_atomic(tmp_path):
@@ -397,4 +717,3 @@ def test_source_text_hash_mismatch_reports_file_and_line(tmp_path):
     assert str(source_path) in message
     assert ":1" in message
     assert "text_sha256 mismatch" in message
-

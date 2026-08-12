@@ -1,0 +1,139 @@
+schema_version: 1
+format_name: small_gpt_tokenized_corpus
+
+source:
+  dataset: HuggingFaceFW/fineweb-edu
+  configuration: sample-10BT
+  revision: 87f09149ef4734204d70ed1d046ddc9ca3f2b8f9
+  corpus_dir: data/processed/fineweb_edu_full
+  manifest: data/processed/fineweb_edu_full/manifest.json
+  identity_mode: capture_complete_manifest
+  expected_config_fingerprint: 90285a82d78c85c60ad113442902a39ea3e7d0b32589d00d0d206d2e77c93ca5
+  expected_profile:
+    name: full
+    target_provided_tokens: 350000000
+    shard_target_provided_tokens: 5000000
+    estimated_shards: 70
+  split_order:
+    - train
+    - validation
+    - test
+  file_pattern: "shards/shard-*/{split}.jsonl"
+  deterministic_order: source_shard_then_line
+  validate_text_sha256: true
+
+tokenizer:
+  file: tokenizer/artifacts/tokenizer.json
+  sha256: b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5
+  metadata: tokenizer/artifacts/tokenizer_config.json
+  metadata_sha256: 8622711407aab3f299996b7d3009d4f4447ae35879ca8e50451b5f0adbdf5141
+  library:
+    name: tokenizers
+    version: "0.23.1"
+  vocab_size: 16384
+  normalizer: nfc
+  special_tokens:
+    bos:
+      token: "<bos>"
+      id: 0
+    eos:
+      token: "<eos>"
+      id: 1
+    pad:
+      token: "<pad>"
+      id: 2
+    unk:
+      token: "<unk>"
+      id: 3
+
+encoding:
+  append_eos_per_document: true
+  add_bos: false
+  add_pad: false
+  reject_empty_document: true
+  allow_cross_document_windows: true
+  allow_cross_storage_shard_windows: true
+  allow_cross_split_windows: false
+
+binary_format:
+  schema_version: 1
+  magic: SGPTTOK1
+  header_bytes: 64
+  struct_format: "<8sHHBBHIB3xQQQIII4x"
+  dtype: "<u2"
+  dtype_code: 1
+  endian: little
+  endian_code: 1
+  flags:
+    append_eos_bit: 0
+    add_bos_bit: 1
+    add_pad_bit: 2
+  split_codes:
+    train: 0
+    validation: 1
+    test: 2
+
+index_format:
+  schema_version: 1
+  magic: SGPTIDX1
+  header_bytes: 128
+  header_struct_format: "<8sHHHBBQQQQ32sQI36x"
+  record_bytes: 48
+  record_struct_format: "<QQ32s"
+  offset_dtype: "<u8"
+  offset_semantics: shard_local_token_offset
+  length_dtype: "<u8"
+  length_includes_eos: true
+  document_identity: text_sha256_raw_32_bytes
+
+publication:
+  manifest_file: manifest.json
+  state_file: state.json
+  part_suffix: .part
+  completed_output_behavior: identity_match_noop
+  overwrite_complete_output: false
+  atomic_publish: true
+  fsync_files: true
+
+profiles:
+  full:
+    output_dir: data/tokenized/fineweb_edu_full
+    staging_dir: data/tokenized/.fineweb_edu_full.inprogress
+    target_model_tokens_per_shard: 5000000
+    document_atomic: true
+    resume_enabled: true
+
+statistics:
+  mode: source_manifest_observed
+  require_zero_unknown_tokens: true
+
+dataset:
+  storage_view: split_logical_stream
+  lazy_memmap: true
+  output_torch_dtype: long
+  train:
+    dataset_mode: all_starts
+    sampler: epoch_random_window_with_replacement
+    base_seed: 42
+    shuffle: false
+    drop_last_batch: true
+  evaluation:
+    dataset_mode: sequential_non_overlapping
+    start_token: 0
+    shuffle: false
+    drop_last_batch: false
+  dataloader:
+    default_num_workers: 0
+    windows_validation_num_workers:
+      - 0
+      - 2
+    default_pin_memory: false
+
+fingerprint:
+  algorithm: sha256
+  canonical_json_sort_keys: true
+  exclude_runtime_fields:
+    - profiles.full.output_dir
+    - profiles.full.staging_dir
+    - cli.resume
+    - cli.no_progress

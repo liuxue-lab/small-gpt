@@ -1,4 +1,4 @@
-"""Deterministic, resumable corpus tokenization for small-gpt Day 5."""
+"""Deterministic, resumable corpus tokenization for small-gpt."""
 
 from __future__ import annotations
 
@@ -60,6 +60,10 @@ from .binary_format import (
 FORMAT_NAME = "small_gpt_tokenized_corpus"
 ALLOWED_SPLITS = ("train", "validation", "test")
 ALLOWED_PROFILE = "pilot"
+ALLOWED_PROFILES = ("pilot", "full")
+FROZEN_SOURCE_IDENTITY = "frozen_manifest"
+CAPTURED_SOURCE_IDENTITY = "capture_complete_manifest"
+OBSERVED_STATISTICS_MODE = "source_manifest_observed"
 DAY4_STATS_PATH = "reports/day-04-tokenizer-stats.json"
 SHARD_FILE_RE = re.compile(r"shard-(\d{5})\.(bin|idx)(\.part)?")
 
@@ -149,7 +153,7 @@ def _require_equal(actual: Any, expected: Any, field: str) -> None:
 
 
 def load_tokenized_data_config(path: str | Path) -> dict[str, Any]:
-    """Load and validate the side-effect-free Day 5 YAML contract."""
+    """Load and validate a side-effect-free tokenized-data YAML contract."""
 
     config_path = Path(path)
     if not config_path.is_file():
@@ -168,10 +172,17 @@ def load_tokenized_data_config(path: str | Path) -> dict[str, Any]:
 
 
 def validate_tokenized_data_config(config: Mapping[str, Any]) -> None:
-    """Validate all semantic fields used by the current Pilot implementation."""
+    """Validate the frozen Pilot or manifest-bound Full data contract."""
 
     _require_equal(config.get("schema_version"), SCHEMA_VERSION, "schema_version")
     _require_equal(config.get("format_name"), FORMAT_NAME, "format_name")
+
+    profiles = _mapping(config.get("profiles"), "profiles")
+    if len(profiles) != 1 or not set(profiles).issubset(ALLOWED_PROFILES):
+        raise TokenizedDataConfigError(
+            "profiles must contain exactly one executable profile: pilot or full"
+        )
+    configured_profile = next(iter(profiles))
 
     source = _mapping(config.get("source"), "source")
     for field in (
@@ -184,8 +195,75 @@ def validate_tokenized_data_config(config: Mapping[str, Any]) -> None:
         "deterministic_order",
     ):
         _nonempty_string(source.get(field), f"source.{field}")
-    _sha256_string(source.get("manifest_sha256"), "source.manifest_sha256")
-    _positive_int(source.get("expected_source_shards"), "source.expected_source_shards")
+    identity_mode = source.get("identity_mode", FROZEN_SOURCE_IDENTITY)
+    if configured_profile == ALLOWED_PROFILE:
+        _require_equal(
+            identity_mode,
+            FROZEN_SOURCE_IDENTITY,
+            "source.identity_mode",
+        )
+        _sha256_string(source.get("manifest_sha256"), "source.manifest_sha256")
+        _positive_int(
+            source.get("expected_source_shards"),
+            "source.expected_source_shards",
+        )
+    else:
+        _require_equal(
+            identity_mode,
+            CAPTURED_SOURCE_IDENTITY,
+            "source.identity_mode",
+        )
+        has_manifest_sha = "manifest_sha256" in source
+        has_shard_count = "expected_source_shards" in source
+        if has_manifest_sha != has_shard_count:
+            raise TokenizedDataConfigError(
+                "Full source.manifest_sha256 and expected_source_shards must "
+                "either both be absent or both be resolved"
+            )
+        if has_manifest_sha:
+            _sha256_string(source.get("manifest_sha256"), "source.manifest_sha256")
+            _positive_int(
+                source.get("expected_source_shards"),
+                "source.expected_source_shards",
+            )
+        _sha256_string(
+            source.get("expected_config_fingerprint"),
+            "source.expected_config_fingerprint",
+        )
+        expected_profile = _mapping(
+            source.get("expected_profile"),
+            "source.expected_profile",
+        )
+        _require_equal(
+            expected_profile.get("name"),
+            "full",
+            "source.expected_profile.name",
+        )
+        target_provided_tokens = _positive_int(
+            expected_profile.get("target_provided_tokens"),
+            "source.expected_profile.target_provided_tokens",
+        )
+        shard_target_provided_tokens = _positive_int(
+            expected_profile.get("shard_target_provided_tokens"),
+            "source.expected_profile.shard_target_provided_tokens",
+        )
+        if shard_target_provided_tokens > target_provided_tokens:
+            raise TokenizedDataConfigError(
+                "source.expected_profile.shard_target_provided_tokens must not "
+                "exceed target_provided_tokens"
+            )
+        estimated_shards = _positive_int(
+            expected_profile.get("estimated_shards"),
+            "source.expected_profile.estimated_shards",
+        )
+        calculated_shards = (
+            target_provided_tokens + shard_target_provided_tokens - 1
+        ) // shard_target_provided_tokens
+        if estimated_shards != calculated_shards:
+            raise TokenizedDataConfigError(
+                "source.expected_profile.estimated_shards does not match "
+                "the Full budgets"
+            )
     _require_equal(
         source.get("split_order"),
         list(ALLOWED_SPLITS),
@@ -213,7 +291,7 @@ def validate_tokenized_data_config(config: Mapping[str, Any]) -> None:
     _nonempty_string(library.get("version"), "tokenizer.library.version")
     vocab_size = _positive_int(tokenizer.get("vocab_size"), "tokenizer.vocab_size")
     if vocab_size != 16_384:
-        raise TokenizedDataConfigError("tokenizer.vocab_size must be 16384 for Pilot")
+        raise TokenizedDataConfigError("tokenizer.vocab_size must be 16384")
     _require_equal(tokenizer.get("normalizer"), "nfc", "tokenizer.normalizer")
     special_tokens = _mapping(tokenizer.get("special_tokens"), "tokenizer.special_tokens")
     expected_special = {
@@ -293,65 +371,111 @@ def validate_tokenized_data_config(config: Mapping[str, Any]) -> None:
     for field, expected in expected_publication.items():
         _require_equal(publication.get(field), expected, f"publication.{field}")
 
-    profiles = _mapping(config.get("profiles"), "profiles")
-    if set(profiles) != {ALLOWED_PROFILE}:
-        raise TokenizedDataConfigError("profiles must contain only the executable pilot profile")
-    pilot = _mapping(profiles[ALLOWED_PROFILE], "profiles.pilot")
-    _nonempty_string(pilot.get("output_dir"), "profiles.pilot.output_dir")
-    _nonempty_string(pilot.get("staging_dir"), "profiles.pilot.staging_dir")
+    selected_profile = _mapping(
+        profiles[configured_profile],
+        f"profiles.{configured_profile}",
+    )
+    _nonempty_string(
+        selected_profile.get("output_dir"),
+        f"profiles.{configured_profile}.output_dir",
+    )
+    _nonempty_string(
+        selected_profile.get("staging_dir"),
+        f"profiles.{configured_profile}.staging_dir",
+    )
     shard_target = _positive_int(
-        pilot.get("target_model_tokens_per_shard"),
-        "profiles.pilot.target_model_tokens_per_shard",
+        selected_profile.get("target_model_tokens_per_shard"),
+        f"profiles.{configured_profile}.target_model_tokens_per_shard",
     )
     if shard_target <= 513:
         raise TokenizedDataConfigError(
-            "profiles.pilot.target_model_tokens_per_shard must exceed 513"
+            f"profiles.{configured_profile}.target_model_tokens_per_shard "
+            "must exceed 513"
         )
-    _require_equal(pilot.get("document_atomic"), True, "profiles.pilot.document_atomic")
-    _require_equal(pilot.get("resume_enabled"), True, "profiles.pilot.resume_enabled")
+    _require_equal(
+        selected_profile.get("document_atomic"),
+        True,
+        f"profiles.{configured_profile}.document_atomic",
+    )
+    _require_equal(
+        selected_profile.get("resume_enabled"),
+        True,
+        f"profiles.{configured_profile}.resume_enabled",
+    )
 
-    expected = _mapping(config.get("expected"), "expected")
-    expected_fields = (
-        "records",
-        "provided_tokens",
-        "raw_bpe_tokens",
-        "appended_eos_tokens",
-        "model_tokens",
-        "unknown_tokens",
-    )
-    summed = Counter()
-    for split in ALLOWED_SPLITS:
-        split_expected = _mapping(expected.get(split), f"expected.{split}")
+    if configured_profile == ALLOWED_PROFILE:
+        expected = _mapping(config.get("expected"), "expected")
+        expected_fields = (
+            "records",
+            "provided_tokens",
+            "raw_bpe_tokens",
+            "appended_eos_tokens",
+            "model_tokens",
+            "unknown_tokens",
+        )
+        summed = Counter()
+        for split in ALLOWED_SPLITS:
+            split_expected = _mapping(expected.get(split), f"expected.{split}")
+            for field in expected_fields:
+                value = _nonnegative_int(
+                    split_expected.get(field),
+                    f"expected.{split}.{field}",
+                )
+                summed[field] += value
+            if split_expected["records"] <= 0:
+                raise TokenizedDataConfigError(
+                    f"expected.{split}.records must be positive"
+                )
+            if split_expected["records"] != split_expected["appended_eos_tokens"]:
+                raise TokenizedDataConfigError(
+                    f"expected.{split}: records must equal appended_eos_tokens"
+                )
+            if (
+                split_expected["raw_bpe_tokens"]
+                + split_expected["appended_eos_tokens"]
+                != split_expected["model_tokens"]
+            ):
+                raise TokenizedDataConfigError(
+                    f"expected.{split}: raw BPE + EOS must equal model tokens"
+                )
+        totals = _mapping(expected.get("totals"), "expected.totals")
         for field in expected_fields:
-            value = _nonnegative_int(split_expected.get(field), f"expected.{split}.{field}")
-            summed[field] += value
-        if split_expected["records"] <= 0:
-            raise TokenizedDataConfigError(f"expected.{split}.records must be positive")
-        if split_expected["records"] != split_expected["appended_eos_tokens"]:
-            raise TokenizedDataConfigError(
-                f"expected.{split}: records must equal appended_eos_tokens"
+            total_value = _nonnegative_int(
+                totals.get(field),
+                f"expected.totals.{field}",
             )
-        if (
-            split_expected["raw_bpe_tokens"] + split_expected["appended_eos_tokens"]
-            != split_expected["model_tokens"]
-        ):
+            if total_value != summed[field]:
+                raise TokenizedDataConfigError(
+                    f"expected.totals.{field} is {total_value}; "
+                    f"split sum is {summed[field]}"
+                )
+        payload_bytes = _nonnegative_int(
+            totals.get("token_payload_bytes"),
+            "expected.totals.token_payload_bytes",
+        )
+        if payload_bytes != totals["model_tokens"] * TOKEN_DTYPE.itemsize:
             raise TokenizedDataConfigError(
-                f"expected.{split}: raw BPE + EOS must equal model tokens"
+                "expected.totals.token_payload_bytes must equal model_tokens * 2"
             )
-    totals = _mapping(expected.get("totals"), "expected.totals")
-    for field in expected_fields:
-        total_value = _nonnegative_int(totals.get(field), f"expected.totals.{field}")
-        if total_value != summed[field]:
+        if "statistics" in config:
             raise TokenizedDataConfigError(
-                f"expected.totals.{field} is {total_value}; split sum is {summed[field]}"
+                "Pilot config must use frozen expected statistics"
             )
-    payload_bytes = _nonnegative_int(
-        totals.get("token_payload_bytes"),
-        "expected.totals.token_payload_bytes",
-    )
-    if payload_bytes != totals["model_tokens"] * TOKEN_DTYPE.itemsize:
-        raise TokenizedDataConfigError(
-            "expected.totals.token_payload_bytes must equal model_tokens * 2"
+    else:
+        if "expected" in config:
+            raise TokenizedDataConfigError(
+                "Full config must not freeze token-output statistics"
+            )
+        statistics = _mapping(config.get("statistics"), "statistics")
+        _require_equal(
+            statistics.get("mode"),
+            OBSERVED_STATISTICS_MODE,
+            "statistics.mode",
+        )
+        _require_equal(
+            statistics.get("require_zero_unknown_tokens"),
+            True,
+            "statistics.require_zero_unknown_tokens",
         )
 
     dataset = _mapping(config.get("dataset"), "dataset")
@@ -404,14 +528,15 @@ def validate_tokenized_data_config(config: Mapping[str, Any]) -> None:
         True,
         "fingerprint.canonical_json_sort_keys",
     )
+    expected_exclusions = [
+        f"profiles.{configured_profile}.output_dir",
+        f"profiles.{configured_profile}.staging_dir",
+        "cli.resume",
+        "cli.no_progress",
+    ]
     _require_equal(
         fingerprint.get("exclude_runtime_fields"),
-        [
-            "profiles.pilot.output_dir",
-            "profiles.pilot.staging_dir",
-            "cli.resume",
-            "cli.no_progress",
-        ],
+        expected_exclusions,
         "fingerprint.exclude_runtime_fields",
     )
 
@@ -431,6 +556,14 @@ def config_fingerprint(config: Mapping[str, Any]) -> str:
     """Hash only fields that can change data content or read semantics."""
 
     validate_tokenized_data_config(config)
+    source = config["source"]
+    if (
+        source.get("identity_mode") == CAPTURED_SOURCE_IDENTITY
+        and "manifest_sha256" not in source
+    ):
+        raise TokenizedDataConfigError(
+            "captured Full source identity must be resolved before fingerprinting"
+        )
     semantic = copy.deepcopy(dict(config))
     excluded = semantic["fingerprint"]["exclude_runtime_fields"]
     for dotted_path in excluded:
@@ -639,6 +772,251 @@ def _validate_day4_statistics(config: Mapping[str, Any], project_root: Path) -> 
                 )
 
 
+def _source_split_counts(
+    statistics: Mapping[str, Any],
+    field: str,
+) -> dict[str, int]:
+    values = _mapping(statistics.get(field), f"source manifest statistics.{field}")
+    if set(values) != set(ALLOWED_SPLITS):
+        raise TokenizationBuildError(
+            f"source manifest statistics.{field} must contain "
+            f"{list(ALLOWED_SPLITS)}"
+        )
+    return {
+        split: _nonnegative_int(
+            values[split],
+            f"source manifest statistics.{field}.{split}",
+        )
+        for split in ALLOWED_SPLITS
+    }
+
+
+def _validate_source_manifest_identity(
+    config: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    *,
+    profile: str,
+) -> None:
+    """Bind a source manifest to its dataset and, for Full, its build contract."""
+
+    dataset = _mapping(manifest.get("dataset"), "source manifest.dataset")
+    identity_mapping = {
+        "name": config["source"]["dataset"],
+        "configuration": config["source"]["configuration"],
+        "revision": config["source"]["revision"],
+    }
+    for field, expected in identity_mapping.items():
+        if dataset.get(field) != expected:
+            raise TokenizationBuildError(
+                f"source manifest dataset.{field} is {dataset.get(field)!r}; "
+                f"expected {expected!r}"
+            )
+
+    shards = manifest.get("shards")
+    if not isinstance(shards, list) or not shards:
+        raise TokenizationBuildError("source manifest shards must be a non-empty list")
+    if len(shards) != int(config["source"]["expected_source_shards"]):
+        raise TokenizationBuildError(
+            f"source manifest has {len(shards)} shards; expected "
+            f"{config['source']['expected_source_shards']}"
+        )
+
+    if profile == ALLOWED_PROFILE:
+        return
+
+    expected_fingerprint = config["source"]["expected_config_fingerprint"]
+    if manifest.get("config_fingerprint") != expected_fingerprint:
+        raise TokenizationBuildError(
+            "Full source manifest configuration fingerprint mismatch"
+        )
+    manifest_profile = _mapping(manifest.get("profile"), "source manifest.profile")
+    expected_profile = config["source"]["expected_profile"]
+    if dict(manifest_profile) != dict(expected_profile):
+        raise TokenizationBuildError(
+            "Full source manifest profile does not match the frozen Full budget"
+        )
+
+    aggregate_records = Counter({split: 0 for split in ALLOWED_SPLITS})
+    aggregate_tokens = Counter({split: 0 for split in ALLOWED_SPLITS})
+    aggregate_removals: Counter[str] = Counter()
+    previous_source_end = 0
+    for shard_index, raw_shard in enumerate(shards):
+        shard = _mapping(raw_shard, f"source manifest.shards[{shard_index}]")
+        if shard.get("schema_version") != SCHEMA_VERSION:
+            raise TokenizationBuildError(
+                f"source shard {shard_index} schema version mismatch"
+            )
+        if shard.get("config_fingerprint") != expected_fingerprint:
+            raise TokenizationBuildError(
+                f"source shard {shard_index} configuration fingerprint mismatch"
+            )
+        if shard.get("shard_index") != shard_index:
+            raise TokenizationBuildError("source shard indexes are not contiguous")
+
+        source_start = _nonnegative_int(
+            shard.get("source_records_start_exclusive"),
+            f"source shard {shard_index}.source_records_start_exclusive",
+        )
+        source_end = _positive_int(
+            shard.get("source_records_end_inclusive"),
+            f"source shard {shard_index}.source_records_end_inclusive",
+        )
+        if source_start != previous_source_end or source_end <= source_start:
+            raise TokenizationBuildError(
+                f"source shard {shard_index} record range is not contiguous"
+            )
+        input_records = _positive_int(
+            shard.get("input_records"),
+            f"source shard {shard_index}.input_records",
+        )
+        if input_records != source_end - source_start:
+            raise TokenizationBuildError(
+                f"source shard {shard_index} input-record count does not conserve"
+            )
+
+        files = _mapping(shard.get("files"), f"source shard {shard_index}.files")
+        split_records = _mapping(
+            shard.get("split_records"),
+            f"source shard {shard_index}.split_records",
+        )
+        split_tokens = _mapping(
+            shard.get("split_provided_tokens"),
+            f"source shard {shard_index}.split_provided_tokens",
+        )
+        if (
+            set(files) != set(ALLOWED_SPLITS)
+            or set(split_records) != set(ALLOWED_SPLITS)
+            or set(split_tokens) != set(ALLOWED_SPLITS)
+        ):
+            raise TokenizationBuildError(
+                f"source shard {shard_index} split set is invalid"
+            )
+
+        shard_records = 0
+        shard_tokens = 0
+        for split in ALLOWED_SPLITS:
+            info = _mapping(
+                files[split],
+                f"source shard {shard_index}.files.{split}",
+            )
+            expected_path = (
+                f"shards/shard-{shard_index:05d}/{split}.jsonl"
+            )
+            if info.get("path") != expected_path:
+                raise TokenizationBuildError(
+                    f"source shard {shard_index} {split} path is invalid"
+                )
+            file_records = _nonnegative_int(
+                info.get("records"),
+                f"source shard {shard_index}.files.{split}.records",
+            )
+            file_tokens = _nonnegative_int(
+                info.get("provided_tokens"),
+                f"source shard {shard_index}.files.{split}.provided_tokens",
+            )
+            declared_records = _nonnegative_int(
+                split_records[split],
+                f"source shard {shard_index}.split_records.{split}",
+            )
+            declared_tokens = _nonnegative_int(
+                split_tokens[split],
+                f"source shard {shard_index}.split_provided_tokens.{split}",
+            )
+            if file_records != declared_records or file_tokens != declared_tokens:
+                raise TokenizationBuildError(
+                    f"source shard {shard_index} {split} file statistics mismatch"
+                )
+            shard_records += file_records
+            shard_tokens += file_tokens
+            aggregate_records[split] += file_records
+            aggregate_tokens[split] += file_tokens
+
+        if shard_records != _nonnegative_int(
+            shard.get("kept_records"),
+            f"source shard {shard_index}.kept_records",
+        ):
+            raise TokenizationBuildError(
+                f"source shard {shard_index} kept-record count does not conserve"
+            )
+        if shard_tokens != _nonnegative_int(
+            shard.get("kept_provided_tokens"),
+            f"source shard {shard_index}.kept_provided_tokens",
+        ):
+            raise TokenizationBuildError(
+                f"source shard {shard_index} provided-token count does not conserve"
+            )
+        removals = _mapping(
+            shard.get("removal_counts"),
+            f"source shard {shard_index}.removal_counts",
+        )
+        removal_total = 0
+        for reason, raw_count in removals.items():
+            count = _nonnegative_int(
+                raw_count,
+                f"source shard {shard_index}.removal_counts.{reason}",
+            )
+            removal_total += count
+            aggregate_removals[str(reason)] += count
+        if shard_records + removal_total != input_records:
+            raise TokenizationBuildError(
+                f"source shard {shard_index} input statistics do not conserve"
+            )
+        previous_source_end = source_end
+
+    statistics = _mapping(manifest.get("statistics"), "source manifest.statistics")
+    manifest_records = _source_split_counts(statistics, "split_records")
+    manifest_tokens = _source_split_counts(statistics, "split_provided_tokens")
+    if manifest_records != dict(aggregate_records):
+        raise TokenizationBuildError(
+            "source manifest split record totals do not match its shards"
+        )
+    if manifest_tokens != dict(aggregate_tokens):
+        raise TokenizationBuildError(
+            "source manifest split provided-token totals do not match its shards"
+        )
+    kept_records = sum(manifest_records.values())
+    kept_tokens = sum(manifest_tokens.values())
+    expected_totals = {
+        "input_records": previous_source_end,
+        "kept_records": kept_records,
+        "kept_provided_tokens": kept_tokens,
+    }
+    for field, expected in expected_totals.items():
+        if _nonnegative_int(
+            statistics.get(field),
+            f"source manifest.statistics.{field}",
+        ) != expected:
+            raise TokenizationBuildError(
+                f"source manifest statistics.{field} does not conserve"
+            )
+    manifest_removals = _mapping(
+        statistics.get("removal_counts"),
+        "source manifest.statistics.removal_counts",
+    )
+    normalized_removals = {
+        str(reason): _nonnegative_int(
+            count,
+            f"source manifest.statistics.removal_counts.{reason}",
+        )
+        for reason, count in manifest_removals.items()
+    }
+    if normalized_removals != dict(aggregate_removals):
+        raise TokenizationBuildError(
+            "source manifest removal totals do not match its shards"
+        )
+    if kept_records + sum(normalized_removals.values()) != previous_source_end:
+        raise TokenizationBuildError("source manifest input statistics do not conserve")
+    if kept_tokens < int(expected_profile["target_provided_tokens"]):
+        raise TokenizationBuildError(
+            "Full source manifest did not reach its provided-token target"
+        )
+    for split in ALLOWED_SPLITS:
+        if manifest_records[split] <= 0 or manifest_tokens[split] <= 0:
+            raise TokenizationBuildError(
+                f"Full source manifest {split} split must be non-empty"
+            )
+
+
 def prepare_build_context(
     config_path: str | Path,
     *,
@@ -651,17 +1029,42 @@ def prepare_build_context(
     root = Path(project_root).resolve()
     resolved_config_path = _resolve_project_path(root, config_path)
     config = load_tokenized_data_config(resolved_config_path)
-    if profile != ALLOWED_PROFILE:
+    configured_profile = next(iter(config["profiles"]))
+    if profile not in ALLOWED_PROFILES:
         raise TokenizedDataConfigError(
-            f"profile must be {ALLOWED_PROFILE!r}; Full is intentionally unavailable"
+            f"profile must be one of {ALLOWED_PROFILES}; found {profile!r}"
         )
-    profile_config = config["profiles"][profile]
+    if profile != configured_profile:
+        raise TokenizedDataConfigError(
+            f"config contains profile {configured_profile!r}, but "
+            f"{profile!r} was requested"
+        )
 
     corpus_dir = _resolve_project_path(root, config["source"]["corpus_dir"])
     source_manifest_path = _resolve_project_path(root, config["source"]["manifest"])
     tokenizer_path = _resolve_project_path(root, config["tokenizer"]["file"])
     tokenizer_metadata_path = _resolve_project_path(root, config["tokenizer"]["metadata"])
 
+    if config["source"].get("identity_mode") == CAPTURED_SOURCE_IDENTITY:
+        if not source_manifest_path.is_file():
+            raise TokenizationBuildError(
+                f"Full source manifest does not exist: {source_manifest_path}"
+            )
+        source_manifest_preview = _load_json_object(
+            source_manifest_path,
+            "Full source manifest",
+        )
+        source_shards = source_manifest_preview.get("shards")
+        if not isinstance(source_shards, list) or not source_shards:
+            raise TokenizationBuildError(
+                "Full source manifest shards must be a non-empty list"
+            )
+        config = copy.deepcopy(config)
+        config["source"]["manifest_sha256"] = sha256_file(source_manifest_path)
+        config["source"]["expected_source_shards"] = len(source_shards)
+        validate_tokenized_data_config(config)
+
+    profile_config = config["profiles"][profile]
     if output_dir_override is None:
         output_dir = _resolve_project_path(root, profile_config["output_dir"])
         staging_dir = _resolve_project_path(root, profile_config["staging_dir"])
@@ -679,19 +1082,7 @@ def prepare_build_context(
         source_manifest_path,
         int(config["source"]["expected_source_shards"]),
     )
-    dataset_identity = source_manifest.get("dataset")
-    if isinstance(dataset_identity, Mapping):
-        identity_mapping = {
-            "name": config["source"]["dataset"],
-            "configuration": config["source"]["configuration"],
-            "revision": config["source"]["revision"],
-        }
-        for field, expected in identity_mapping.items():
-            if dataset_identity.get(field) != expected:
-                raise TokenizationBuildError(
-                    f"source manifest dataset.{field} is {dataset_identity.get(field)!r}; "
-                    f"expected {expected!r}"
-                )
+    _validate_source_manifest_identity(config, source_manifest, profile=profile)
 
     source_files = {
         split: discover_split_files(
@@ -722,7 +1113,8 @@ def prepare_build_context(
     tokenizer_metadata = _load_json_object(tokenizer_metadata_path, "tokenizer metadata")
     tokenizer = load_tokenizer(tokenizer_path)
     special_ids = _validate_tokenizer_metadata(config, tokenizer_metadata, tokenizer)
-    _validate_day4_statistics(config, root)
+    if profile == ALLOWED_PROFILE:
+        _validate_day4_statistics(config, root)
 
     return BuildContext(
         config=config,
@@ -1333,18 +1725,52 @@ def _core_expected_statistics(config: Mapping[str, Any], split: str) -> dict[str
     }
 
 
+def _expected_source_counts(context: BuildContext, split: str) -> dict[str, int]:
+    if context.profile == ALLOWED_PROFILE:
+        return {
+            "records": int(context.config["expected"][split]["records"]),
+            "provided_tokens": int(
+                context.config["expected"][split]["provided_tokens"]
+            ),
+        }
+    statistics = _mapping(
+        context.source_manifest.get("statistics"),
+        "source manifest.statistics",
+    )
+    records = _source_split_counts(statistics, "split_records")
+    provided_tokens = _source_split_counts(
+        statistics,
+        "split_provided_tokens",
+    )
+    return {
+        "records": records[split],
+        "provided_tokens": provided_tokens[split],
+    }
+
+
 def _validate_split_against_expected(
     context: BuildContext,
     split: str,
     statistics: Mapping[str, Any],
 ) -> None:
-    expected = _core_expected_statistics(context.config, split)
-    for field, expected_value in expected.items():
-        actual = int(statistics[field])
-        if actual != expected_value:
-            raise TokenizationBuildError(
-                f"{split}.{field} is {actual}; Day 4 expected {expected_value}"
-            )
+    if context.profile == ALLOWED_PROFILE:
+        expected = _core_expected_statistics(context.config, split)
+        for field, expected_value in expected.items():
+            actual = int(statistics[field])
+            if actual != expected_value:
+                raise TokenizationBuildError(
+                    f"{split}.{field} is {actual}; Day 4 expected {expected_value}"
+                )
+    else:
+        expected_source = _expected_source_counts(context, split)
+        for field, expected_value in expected_source.items():
+            actual = int(statistics[field])
+            if actual != expected_value:
+                raise TokenizationBuildError(
+                    f"{split}.{field} is {actual}; Full source manifest "
+                    f"declares {expected_value}"
+                )
+        _validate_statistics_conservation(statistics, label=split)
     if int(statistics["writer_inserted_bos_tokens"]) != 0:
         raise TokenizationBuildError(f"{split} writer inserted BOS tokens")
     if int(statistics["writer_inserted_pad_tokens"]) != 0:
@@ -1467,10 +1893,11 @@ def _build_split(
             f"{split} source has {records_seen} records, fewer than "
             f"the {committed_records} committed records"
         )
-    if records_seen != int(context.config["expected"][split]["records"]):
+    expected_records = _expected_source_counts(context, split)["records"]
+    if records_seen != expected_records:
         raise TokenizationBuildError(
             f"{split} source contains {records_seen} records; expected "
-            f"{context.config['expected'][split]['records']}"
+            f"{expected_records}"
         )
     _validate_split_against_expected(context, split, split_state["statistics"])
     split_state["complete"] = True
@@ -1494,6 +1921,40 @@ def _manifest_split_payload(
     ]
     payload["storage_shards"] = len(split_state["shards"])
     payload["shards"] = copy.deepcopy(split_state["shards"])
+    return payload
+
+
+def _manifest_source_payload(context: BuildContext) -> dict[str, Any]:
+    payload = {
+        "dataset": context.config["source"]["dataset"],
+        "configuration": context.config["source"]["configuration"],
+        "revision": context.config["source"]["revision"],
+        "manifest": project_relative_path(
+            context.source_manifest_path,
+            context.project_root,
+        ),
+        "manifest_sha256": context.config["source"]["manifest_sha256"],
+        "expected_source_shards": context.config["source"][
+            "expected_source_shards"
+        ],
+        "split_order": list(ALLOWED_SPLITS),
+        "deterministic_order": context.config["source"]["deterministic_order"],
+    }
+    if context.profile == "full":
+        source_statistics = _mapping(
+            context.source_manifest.get("statistics"),
+            "source manifest.statistics",
+        )
+        payload["config_fingerprint"] = context.source_manifest[
+            "config_fingerprint"
+        ]
+        payload["profile"] = copy.deepcopy(context.source_manifest["profile"])
+        payload["statistics"] = {
+            "split_records": copy.deepcopy(source_statistics["split_records"]),
+            "split_provided_tokens": copy.deepcopy(
+                source_statistics["split_provided_tokens"]
+            ),
+        }
     return payload
 
 
@@ -1523,21 +1984,7 @@ def build_manifest(
         "status": "complete",
         "profile": context.profile,
         "config_fingerprint": context.fingerprint,
-        "source": {
-            "dataset": context.config["source"]["dataset"],
-            "configuration": context.config["source"]["configuration"],
-            "revision": context.config["source"]["revision"],
-            "manifest": project_relative_path(
-                context.source_manifest_path,
-                context.project_root,
-            ),
-            "manifest_sha256": context.config["source"]["manifest_sha256"],
-            "expected_source_shards": context.config["source"][
-                "expected_source_shards"
-            ],
-            "split_order": list(ALLOWED_SPLITS),
-            "deterministic_order": context.config["source"]["deterministic_order"],
-        },
+        "source": _manifest_source_payload(context),
         "tokenizer": {
             "file": project_relative_path(context.tokenizer_path, context.project_root),
             "sha256": context.config["tokenizer"]["sha256"],
@@ -1763,6 +2210,56 @@ def _verify_manifest_identities(
     source_manifest = _load_json_object(source_manifest_path, "source manifest")
     if source_manifest.get("status") != "complete":
         raise TokenizationBuildError("source manifest is no longer complete")
+    source_dataset = _mapping(
+        source_manifest.get("dataset"),
+        "source manifest.dataset",
+    )
+    for manifest_field, source_field in (
+        ("dataset", "name"),
+        ("configuration", "configuration"),
+        ("revision", "revision"),
+    ):
+        if source_dataset.get(source_field) != source.get(manifest_field):
+            raise TokenizationBuildError(
+                f"source manifest dataset.{source_field} identity mismatch"
+            )
+    source_shards = source_manifest.get("shards")
+    expected_source_shards = _positive_int(
+        source.get("expected_source_shards"),
+        "manifest.source.expected_source_shards",
+    )
+    if not isinstance(source_shards, list) or len(source_shards) != expected_source_shards:
+        raise TokenizationBuildError("source manifest shard-count identity mismatch")
+
+    has_full_identity = "config_fingerprint" in source
+    full_identity_fields = {"config_fingerprint", "profile", "statistics"}
+    present_full_fields = full_identity_fields.intersection(source)
+    if present_full_fields and present_full_fields != full_identity_fields:
+        raise TokenizationBuildError("manifest Full source identity is incomplete")
+    if has_full_identity:
+        source_fingerprint = _sha256_string(
+            source.get("config_fingerprint"),
+            "manifest.source.config_fingerprint",
+        )
+        if source_manifest.get("config_fingerprint") != source_fingerprint:
+            raise TokenizationBuildError(
+                "source manifest configuration fingerprint identity mismatch"
+            )
+        if source_manifest.get("profile") != source.get("profile"):
+            raise TokenizationBuildError("source manifest Full profile identity mismatch")
+        source_statistics = _mapping(
+            source.get("statistics"),
+            "manifest.source.statistics",
+        )
+        current_statistics = _mapping(
+            source_manifest.get("statistics"),
+            "source manifest.statistics",
+        )
+        for field in ("split_records", "split_provided_tokens"):
+            if source_statistics.get(field) != current_statistics.get(field):
+                raise TokenizationBuildError(
+                    f"source manifest {field} identity mismatch"
+                )
 
     tokenizer = _mapping(manifest.get("tokenizer"), "manifest.tokenizer")
     tokenizer_path = _safe_project_identity_path(
@@ -1808,6 +2305,11 @@ def validate_completed_corpus(
         raise TokenizationBuildError("tokenized corpus manifest format mismatch")
     if manifest.get("status") != "complete":
         raise TokenizationBuildError("tokenized corpus manifest is not complete")
+    profile = manifest.get("profile")
+    if profile not in ALLOWED_PROFILES:
+        raise TokenizationBuildError(
+            f"tokenized corpus manifest profile must be one of {ALLOWED_PROFILES}"
+        )
     fingerprint = manifest.get("config_fingerprint")
     if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
         raise TokenizationBuildError("manifest config_fingerprint is invalid")
@@ -1825,6 +2327,27 @@ def validate_completed_corpus(
     if source_info.get("split_order") != list(ALLOWED_SPLITS):
         raise TokenizationBuildError(
             f"manifest source.split_order must be {list(ALLOWED_SPLITS)}"
+        )
+    if profile == "full" and not {
+        "config_fingerprint",
+        "profile",
+        "statistics",
+    }.issubset(source_info):
+        raise TokenizationBuildError("Full manifest source identity is incomplete")
+    full_source_records: dict[str, int] | None = None
+    full_source_tokens: dict[str, int] | None = None
+    if profile == "full":
+        full_source_statistics = _mapping(
+            source_info.get("statistics"),
+            "manifest.source.statistics",
+        )
+        full_source_records = _source_split_counts(
+            full_source_statistics,
+            "split_records",
+        )
+        full_source_tokens = _source_split_counts(
+            full_source_statistics,
+            "split_provided_tokens",
         )
 
     tokenizer_info = _mapping(manifest.get("tokenizer"), "manifest.tokenizer")
@@ -1856,6 +2379,15 @@ def validate_completed_corpus(
             f"manifest.splits.{split}",
         )
         _validate_statistics_conservation(split_statistics, label=split)
+        if full_source_records is not None and full_source_tokens is not None:
+            if int(split_statistics["records"]) != full_source_records[split]:
+                raise TokenizationBuildError(
+                    f"manifest {split} records do not match the Full source"
+                )
+            if int(split_statistics["provided_tokens"]) != full_source_tokens[split]:
+                raise TokenizationBuildError(
+                    f"manifest {split} provided tokens do not match the Full source"
+                )
         shards = split_payload.get("shards")
         if not isinstance(shards, list) or not shards:
             raise TokenizationBuildError(f"manifest {split} shards must be non-empty")
@@ -1980,6 +2512,11 @@ def validate_completed_corpus(
 def preflight_summary(context: BuildContext, *, resume: bool) -> list[str]:
     """Return a compact, user-facing summary after all read-only checks pass."""
 
+    statistics_contract = (
+        "frozen Day 4 exact statistics"
+        if context.profile == ALLOWED_PROFILE
+        else "source-manifest counts plus observed token conservation"
+    )
     return [
         "Tokenized corpus preflight",
         f"  profile: {context.profile}",
@@ -1999,7 +2536,7 @@ def preflight_summary(context: BuildContext, *, resume: bool) -> list[str]:
         f"  output: {project_relative_path(context.output_dir, context.project_root)}",
         f"  staging: {project_relative_path(context.staging_dir, context.project_root)}",
         f"  resume: {resume}",
-        "  Full/AutoDL: disabled",
+        f"  statistics contract: {statistics_contract}",
     ]
 
 
@@ -2010,7 +2547,7 @@ def build_tokenized_corpus(
     progress: Callable[[str], None] | None = None,
     interrupt_after_completed_shards: int | None = None,
 ) -> BuildResult:
-    """Build, validate, and atomically publish the configured Pilot corpus."""
+    """Build, validate, and atomically publish the configured token corpus."""
 
     progress_callback = progress or (lambda _message: None)
     manifest_name = context.config["publication"]["manifest_file"]
