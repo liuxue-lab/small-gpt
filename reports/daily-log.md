@@ -1269,3 +1269,266 @@ FineWeb-Edu Pilot
 - 冻结 workers、pin memory 与 checkpoint 路径；
 - 运行 Baseline BF16 短 smoke 和 resume；
 - 完成 Full 数据与磁盘预算后，才允许启动 300M-token 正式预训练。
+
+## Day 8：RTX 5090 Baseline 资源定标与短程验收
+
+### 日期
+
+2026-08-12
+
+### 今日目标
+
+在不构建 Full、不启动 300M-token 正式训练的前提下，使用 AutoDL RTX 5090 和真实 tokenized Pilot：
+
+1. 建立隔离式资源探针；
+2. 探测 Baseline micro batch、accumulation、workers 与 pin memory；
+3. 冻结四个资源字段与精确 update/token 计划；
+4. 运行 Baseline BF16 dry-run、短跑、validation 与 checkpoint；
+5. 验证独立 resume 对照和正式训练入口 resume；
+6. 下载完整证据并核对 SHA；
+7. 关闭计费实例，生成本地配置与文档合入包。
+
+### 授权边界
+
+用户授权 AutoDL RTX 5090，本轮上限 60 分钟，允许远端只读检查、`git pull --ff-only`、Pilot 资源探测和后续短跑 checkpoint；明确禁止 Full 数据和 300M-token 正式训练。
+
+执行过程中只上传 2M Pilot tokenized artifacts，最长训练路径为 25 updates / 1,638,400 tokens。没有构建 Full，没有启动正式预训练。证据下载并验证后，A57 与 F19 均由用户确认关机。
+
+### Stage A 本地准备
+
+新增资源探针：
+
+- `train/resource_probe.py`
+- `scripts/probe_baseline_resources.py`
+- `tests/test_resource_probe.py`
+- `reports/day-08-resource-calibration-design.md`
+
+本地门：
+
+```text
+tests/test_resource_probe.py: 23 passed
+full regression: 531 passed in 14.24s
+```
+
+Stage A 提交并推送：
+
+```text
+2e3166c395d7057cb8509fda6f5768bd9b203537
+feat: add isolated baseline resource probe
+HEAD == origin/main
+```
+
+### 远端身份
+
+| 项目 | 结果 |
+| --- | --- |
+| GPU | NVIDIA GeForce RTX 5090 |
+| Driver | 580.105.08 |
+| VRAM | 32,607 MiB |
+| Python | 3.12.3 |
+| PyTorch | 2.12.1+cu130 |
+| CUDA | 13.0 |
+| cuDNN | 92000 |
+| BF16 | supported |
+| tokenizers | 0.23.1 |
+| Commit | `2e3166c395d7057cb8509fda6f5768bd9b203537` |
+| Git status | clean |
+| 持久盘 | 50 GB；证据采集时剩余 49 GB |
+
+AutoDL 控制台显示 25 CPU cores、90 GB RAM、¥2.78/小时。
+
+### Pilot 上传与身份验证
+
+| 项目 | 结果 |
+| --- | --- |
+| 上传 ZIP SHA-256 | `2bda0cd8fa495cba9314a06c633458d96f1130d1b1e240638f9e24fe528ba396` |
+| Archive safety | PASS，16 entries |
+| Manifest SHA-256 | `141a0c4626cb4f5ba8b041984514825b0d30a34ac8f51a8fcc2fdbb6e512f961` |
+| Dataset fingerprint | `a3eb6012c1cb3e2dab2a7839bebb04530563b19b4d5f7d8022e3c121b13ca7f3` |
+| Tokenizer SHA-256 | `b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5` |
+| Model tokens | 2,129,776 |
+| Payload bytes | 4,259,552 |
+| Storage shards | 5 |
+| Shard scan | PASS |
+
+Tokenizer metadata 的 SHA 差异被定位为 Windows CRLF 与远端 LF 的字节差异。严格转换为 CRLF 后精确匹配期望 SHA，因此记录 `PASS_CRLF`。source corpus manifest 没有随 Pilot 上传，身份检查标记 `DEFERRED_BY_SCOPE`；正式 Full/训练前仍是硬门。
+
+### Micro-batch sweep
+
+所有候选均成功：
+
+| Batch | Tokens/s | Peak allocated GiB | Peak reserved GiB | Reserved |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 31,842 | 0.777 | 0.812 | 2.59% |
+| 2 | 69,474 | 1.034 | 1.037 | 3.31% |
+| 4 | 126,529 | 1.560 | 1.621 | 5.17% |
+| 8 | 228,223 | 2.594 | 2.637 | 8.41% |
+| 12 | 236,347 | 3.631 | 3.834 | 12.23% |
+| 16 | 241,017 | 4.663 | 5.053 | 16.11% |
+
+选择 batch 16。它是最大已测成功候选，不是已找到的 OOM 上限。b12 → b16 吞吐只提升约 1.98%，因此不继续追求更大 batch，保留 validation、allocator 和云端波动余量。
+
+### Accumulation
+
+| Accumulation | Tokens/update | Total updates | Warmup | Tokens/s | Peak reserved |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 | 16,384 | 18,311 | 367 | 252,141 | 5.553 GiB |
+| 4 | 32,768 | 9,156 | 184 | 251,133 | 5.553 GiB |
+| 8 | 65,536 | 4,578 | 92 | 249,709 | 5.553 GiB |
+
+选择 accumulation 8。相对 a2 吞吐只低约 0.96%，显存不增加，并形成清晰的 65,536 tokens/update 正式计划。
+
+### DataLoader sweep
+
+| Workers | Pin | Tokens/s |
+| ---: | --- | ---: |
+| 0 | false | 238,838 |
+| 0 | true | 237,098 |
+| 2 | false | 228,000 |
+| 2 | true | 230,212 |
+| 4 | false | 246,578 |
+| 4 | true | 224,355 |
+| 8 | false | 235,713 |
+| 8 | true | 236,980 |
+
+选择 workers 4、pin memory false。所有候选 peak reserved 均为 5.553 GiB / 17.71%。
+
+### 冻结配置
+
+```yaml
+micro_batch_size: 16
+gradient_accumulation_steps: 8
+num_workers: 4
+pin_memory: false
+```
+
+精确计划：
+
+```text
+tokens/micro-step = 16 × 512 = 8,192
+tokens/update = 8,192 × 8 = 65,536
+total updates = ceil(300,000,000 / 65,536) = 4,578
+warmup updates = ceil(4,578 × 0.02) = 92
+planned tokens = 300,023,808
+overshoot = 23,808
+```
+
+只冻结以上四字段。正式 Baseline 的 `eval_interval=500`、`eval_batches=100` 和 `save_interval=1000` 不变。短跑使用 10 / 3 / 20 只是为了在有限时间内增加 validation 与 checkpoint 覆盖。
+
+### BF16 dry-run 与短跑
+
+Dry-run 通过：
+
+```text
+Model parameters: 33,833,984
+Device / precision: cuda:0 / bf16
+Autocast: true
+GradScaler: false
+Sample input/target: (16, 512)
+Tokens/update: 65,536
+Total/warmup updates: 4,578 / 92
+Source dirty: false
+```
+
+20-step 短跑和 20 → 25 resume：
+
+| Step | Train loss | Validation loss | Perplexity | Grad norm |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 9.815502 |  |  | 7.472572 |
+| 10 | 8.993008 | 8.953871 | 7,737.787 | 2.180461 |
+| 20 | 8.685449 | 8.641006 | 5,659.020 | 1.769621 |
+| 25 resumed | 8.486105 |  |  | 1.614367 |
+
+最终 25 updates / 1,638,400 tokens；所有训练和验证数值有限。JSONL 共 31 events，train steps 1～25 连续，evaluation steps 为 10/20，checkpoint steps 为 20/25，resume step 为 20。
+
+### Checkpoint 与 resume
+
+独立 2 → 4 step 对照通过：
+
+- 下一 batch exact；
+- scheduler exact；
+- Python/NumPy/Torch RNG exact；
+- continuation metrics、model、optimizer 在 `rtol=0.0005, atol=0.00005` 内一致；
+- 最终 step 4 / 262,144 tokens。
+
+正式 checkpoint：
+
+| Step | Bytes | SHA-256 |
+| ---: | ---: | --- |
+| 20 | 406,108,827 | `696d544311a74211b0bbe04d3d33a15eddebe969c9214ac23063ff483b794d80` |
+| 25 | 406,108,827 | `7ed909498406151e22020df4ab5d7f27a55a1bfe09c688d91ef65f9f3d7f0e09` |
+
+保存耗时均值 0.938043 秒。checkpoint load 没有单独计时，不能虚构 load latency。
+
+### 吞吐、ETA 与费用
+
+原始 JSONL 重算的 step 2～25 steady update throughput，排除 resume 后冷启动 step 21，为 236,442.75 tokens/s。按正式 interval 模型估算约 21.31 分钟 / ¥0.99；把 20-step 的 11 秒完整墙钟直接外推得到保守上界约 41.96 分钟 / ¥1.94。
+
+规划范围写作 21～42 分钟、¥0.99～¥1.94，只是当前 RTX 5090/Pilot 环境的计算估算，不包含 Full 构建、云端抖动、热降频和重跑。
+
+### 证据包与关机
+
+远端证据包 SHA-256：
+
+```text
+8ebcb2b968a96ca1a7cfa950a5d2ff6188e9e41f44cb925e65f0eb19bef61966
+```
+
+本地下载后的 SHA 与远端一致，包内 `SHA256SUMS.txt` 记录的 24 个文件全部通过。A57 与 F19 随后由用户确认关机；实例未释放，持久盘数据仍保留。
+
+### Stage I 本地应用与最终回归
+
+Stage I 更新包通过源 commit、`origin/main`、clean worktree、六个源文件 SHA 和七个 payload SHA 门后完成应用：
+
+```text
+StageIPreflight=PASS
+StageIApply=PASS
+SourceCommit=2e3166c395d7057cb8509fda6f5768bd9b203537
+```
+
+本地最终验证：
+
+```text
+Targeted: 83 passed in 2.41s
+Targeted outer elapsed: 3.20s
+Targeted exit code: 0
+
+Full regression: 531 passed in 13.95s
+Full outer elapsed: 15.71s
+Full exit code: 0
+
+git diff --check exit code: 0
+```
+
+工作区范围精确为 6 个修改文件和 1 个新增报告，没有出现 `data/`、`runs/`、`checkpoints/` 或原始远端证据文件。Baseline diff 只有 `micro_batch_size=16`、`gradient_accumulation_steps=8`、`num_workers=4`、`pin_memory=false` 四项变化。
+
+### Day 8 当前验收状态
+
+- [x] Stage A probe 实现与 531 项回归
+- [x] RTX 5090/BF16/Git 身份
+- [x] Pilot 上传与数据身份扫描
+- [x] Micro-batch sweep
+- [x] Accumulation 选择
+- [x] DataLoader sweep
+- [x] Baseline BF16 dry-run
+- [x] 20-step 短跑与 validation
+- [x] 独立 checkpoint/resume 对照
+- [x] 正式入口 20 → 25 resume
+- [x] 证据下载与 SHA 对照
+- [x] A57/F19 关机
+- [x] 本地应用 Stage I 配置/文档更新
+- [x] 83 项定向测试与 531 项完整项目回归
+- [ ] commit、push、`HEAD == origin/main`
+- [x] Full 未启动
+- [x] 300M-token 正式训练未启动
+
+Day 8 当前进度为 96%。GPU 实验、配置冻结和本地回归已经完成，剩余为最终 diff 审查、commit、push 与远端 hash 核对。
+
+### 下一阶段硬门
+
+1. 已完成 Stage I 本地应用、83 项定向测试与 531 项完整回归；
+2. 已确认 Baseline 只有四个资源字段变化；
+3. 已确认 `git diff --check` exit code 为 0；
+4. commit、普通 push 并核对远端 hash；
+5. Full corpus 和 tokenized Full 必须独立构建、验证和测量磁盘；
+6. 正式训练前重新核对 GPU/软件/数据身份并获得新的明确授权。

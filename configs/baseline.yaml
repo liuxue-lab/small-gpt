@@ -43,8 +43,8 @@ model:
 training:
   device: cuda
   precision: bf16
-  micro_batch_size: null
-  gradient_accumulation_steps: null
+  micro_batch_size: 16
+  gradient_accumulation_steps: 8
   max_steps: null
   target_tokens: 300000000
   learning_rate: 0.0003
@@ -60,8 +60,8 @@ training:
   eval_interval: 500
   eval_batches: 100
   save_interval: 1000
-  num_workers: null
-  pin_memory: null
+  num_workers: 4
+  pin_memory: false
   deterministic: false
   allow_tf32: true
   run_dir: runs

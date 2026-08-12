@@ -1,10 +1,29 @@
 # Day 8 Baseline 资源定标探针设计
 
-## 当前状态
+## 完成状态（2026-08-12）
 
-本文描述 Day 8 本地准备阶段新增的资源探针，不代表 RTX 5090 已经执行过探测，也不代表 Baseline 的四个资源字段已经冻结。
+本设计已经在 AutoDL A57 的 NVIDIA GeForce RTX 5090 上完成执行。探测源码绑定 commit `2e3166c395d7057cb8509fda6f5768bd9b203537`，远端工作区 clean，证据包 SHA-256 为 `8ebcb2b968a96ca1a7cfa950a5d2ff6188e9e41f44cb925e65f0eb19bef61966`。
 
-当前权威 Baseline 仍保持以下未决字段：
+经过 isolated micro-batch、accumulation、DataLoader、BF16 短跑、validation 与 checkpoint/resume 门，最终冻结：
+
+```yaml
+micro_batch_size: 16
+gradient_accumulation_steps: 8
+num_workers: 4
+pin_memory: false
+```
+
+冻结计划为 65,536 tokens/update、4,578 total updates、92 warmup updates、300,023,808 planned tokens 和 23,808 token overshoot。峰值 reserved memory 为 5.553 GiB，占 PyTorch 记录总显存的 17.71%。
+
+详细实测结果、决策理由、checkpoint 身份、ETA、费用与磁盘预算见 [Day 8 RTX 5090 Baseline 资源定标执行报告](day-08-resource-calibration-report.md)。本轮没有构建 Full，也没有启动 300M-token 正式训练。
+
+下方保留执行前设计与命令，作为探针为何如此实现和审计原始假设的历史记录。配置冻结后，探针 CLI 会按设计拒绝把已 resolved 的正式 Baseline 当作“恰好四字段 unresolved”的新探测输入；如需复测，应使用绑定历史身份的临时配置和新输出文件，不应先把正式 Baseline 改回 `null`。
+
+## 执行前状态（历史记录）
+
+以下内容描述 Day 8 本地准备阶段当时新增的资源探针；在该历史时点，RTX 5090 尚未执行探测，Baseline 的四个资源字段也尚未冻结。
+
+当时的权威 Baseline 保持以下未决字段：
 
 ```yaml
 micro_batch_size: null

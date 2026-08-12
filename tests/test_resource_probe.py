@@ -167,12 +167,8 @@ def test_baseline_candidate_resolution_changes_only_resource_fields():
         "num_workers",
         "pin_memory",
     }
-    assert baseline.unresolved_fields == (
-        "micro_batch_size",
-        "gradient_accumulation_steps",
-        "num_workers",
-        "pin_memory",
-    )
+    assert baseline.unresolved_fields == ()
+    assert baseline.is_execution_ready is True
     assert plan.tokens_per_micro_step == 2 * 512
     assert plan.tokens_per_update == 2 * 512 * 4
     assert plan.total_updates == math.ceil(300_000_000 / 4_096)

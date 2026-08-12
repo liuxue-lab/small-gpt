@@ -8,8 +8,8 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 当前阶段 | Day 7 本地训练系统已完成，下一阶段为 AutoDL/Baseline 资源定标 |
-| 自动测试 | Day 1～Day 7 完整回归 `508 passed in 13.49s` |
+| 当前阶段 | Day 8 RTX 5090 资源定标与本地回归已完成；等待 commit、push 与远端 hash 核对 |
+| 自动测试 | Day 8 定向测试 `83 passed in 2.41s`；完整回归 `531 passed in 13.95s` |
 | 数据集 | `HuggingFaceFW/fineweb-edu` / `sample-10BT` |
 | 数据访问方式 | 固定 revision 的流式读取 |
 | 数据管线 | 支持清洗、去重、划分、分片、恢复与完整性校验 |
@@ -24,6 +24,8 @@
 | 训练系统 | AdamW、warmup/cosine、FP32/BF16、validation、JSONL、原子 checkpoint 与 strict resume 已完成 |
 | Debug 训练 | Pilot 上 200 updates / 102,400 tokens；10 次验证；2 个 checkpoint；全程 finite |
 | 恢复验证 | 下一 batch/LR/RNG 精确恢复；模型与 optimizer 在冻结 CUDA FP32 tolerance 内一致 |
+| Baseline 资源 | RTX 5090 已冻结 `micro=16`、`accum=8`、`workers=4`、`pin_memory=false` |
+| Baseline 短跑 | BF16 25 updates / 1,638,400 tokens；validation、checkpoint 与 20→25 resume 均通过 |
 | 正式语料 | 计划采集 350M provided tokens，尚未执行 |
 | Git 分支 | `main` |
 
@@ -267,6 +269,43 @@ Day 7 最终专项门为 `147 passed in 6.17s`，Day 1～Day 7 完整项目回�
 
 以上仅证明 Debug/Pilot 训练工程闭环成立，不代表 33,833,984 参数 Baseline 已完成预训练。AutoDL、350M Full 语料和 300M-token 正式训练仍未启动。
 
+## Day 8 RTX 5090 Baseline 资源定标结果
+
+Day 8 在 AutoDL A57 的单卡 NVIDIA GeForce RTX 5090 上，使用真实 tokenized FineWeb-Edu Pilot 和 Day 7 正式训练路径完成隔离式资源探测。探测绑定 clean commit `2e3166c395d7057cb8509fda6f5768bd9b203537`，证据包已下载并通过远端/本地 SHA-256 对照。
+
+冻结资源配置：
+
+| 字段 | 值 |
+| --- | ---: |
+| `micro_batch_size` | 16 |
+| `gradient_accumulation_steps` | 8 |
+| `num_workers` | 4 |
+| `pin_memory` | false |
+| Context length | 512 |
+| Tokens/micro-step | 8,192 |
+| Tokens/update | 65,536 |
+| Total / warmup updates | 4,578 / 92 |
+| Planned tokens / overshoot | 300,023,808 / 23,808 |
+
+Micro-batch 1、2、4、8、12、16 全部成功。b16 达到 241,017 tokens/s，peak reserved 5.053 GiB / 16.11%；没有为了寻找 OOM 边界继续扩大 batch，因此结论是“已验证到 16”，不是“最大只能为 16”。在 accumulation=8 时 peak reserved 为 5.553 GiB / 17.71%，仍保留充足运行时余量。
+
+DataLoader 的 8 个候选全部成功，`workers=4, pin_memory=false` 以 246,578 tokens/s 位列本轮第一。`pin_memory=true` 没有一致收益。
+
+正式训练入口随后完成：
+
+| 验收项 | 结果 |
+| --- | --- |
+| Baseline BF16 dry-run | PASS；33,833,984 参数，输入/目标 `(16, 512)` |
+| 20-step 短跑 | PASS；1,310,720 tokens；step 10/20 validation 有限 |
+| 独立 resume 对照 | PASS；下一 batch exact，scheduler/RNG exact |
+| 20 → 25 正式 resume | PASS；最终 1,638,400 tokens，JSONL steps 1～25 连续 |
+| Checkpoint | step 20/25 各 406,108,827 bytes |
+| Full / 300M 正式训练 | NOT STARTED |
+
+从 JSONL 重算的 steady update throughput 约为 236,443 tokens/s。300M tokens 的计算时间规划范围约 21～42 分钟，按当时 ¥2.78/小时约为 ¥0.99～¥1.94；该范围不包含 Full 数据准备、云端抖动、热降频或故障重跑。
+
+完整证据、选择理由、磁盘预算和正式训练硬门见 [Day 8 RTX 5090 Baseline 资源定标执行报告](reports/day-08-resource-calibration-report.md)。本轮只完成资源定标和短程工程验收，没有构建 Full，也没有启动 300M-token 正式训练。
+
 ## 数据管线能力
 
 `scripts/build_fineweb_edu_corpus.py` 已实现：
@@ -429,7 +468,7 @@ python .\scripts\train_gpt.py `
 ## 当前配置
 
 - `configs/debug.yaml`：2,508,032 参数本地快速调试配置；
-- `configs/baseline.yaml`：33,833,984 参数租用 GPU 正式训练配置；
+- `configs/baseline.yaml`：33,833,984 参数租用 GPU 正式训练配置；Day 8 已冻结 RTX 5090 资源字段 `16 / 8 / 4 / false`；
 - `configs/data_fineweb_edu.yaml`：FineWeb-Edu 采集、清洗、划分和分片配置；
 - `configs/tokenizer.yaml`：ByteLevel BPE 训练、产物和评估配置；
 - `configs/tokenized_data.yaml`：tokenized binary、索引、发布恢复和 Dataset 契约。
@@ -444,11 +483,15 @@ python .\scripts\check_config.py
 python -m pytest -q
 ```
 
-当前完整测试结果：
+Day 8 四字段冻结后的完整测试结果：
 
 ```text
-508 passed in 13.49s
+531 passed in 13.95s
+PowerShell outer elapsed: 15.71s
+Exit code: 0
 ```
+
+`tests/test_training_config.py` 与 `tests/test_resource_probe.py` 定向门为 `83 passed in 2.41s`，PowerShell outer elapsed 为 3.20 秒；`git diff --check` exit code 为 0。
 
 测试范围包括：
 
@@ -471,13 +514,14 @@ python -m pytest -q
 - Attention 概率、因果 mask、未来信息隔离与 FP32 softmax；
 - GPT logits/loss、无二次 shift、weight tying 和初始化；
 - 全模型梯度、optimizer 去重、固定 seed 与 state dict round-trip；
-- 严格训练配置、update/token budget 与 Baseline unresolved 资源拒绝；
+- 严格训练配置、update/token budget 与 Baseline RTX 5090 冻结资源计划；
 - AdamW 参数分组、tied alias 去重与 warmup/cosine 边界；
 - gradient accumulation、finite checks、梯度裁剪与 FP32/BF16 precision policy；
 - 确定性训练数据流、固定 validation 和 token-weighted loss；
 - JSONL 日志、run-id 防覆盖、resolved config 与 resume 日志校验；
 - checkpoint schema、原子保存、identity mismatch 拒绝与 RNG/data cursor 恢复；
 - 正式训练循环的 log/eval/save interval、final checkpoint 与 CLI 行为。
+- isolated resource candidate、显存门、OOM 识别、原子探测报告与 loader 推荐。
 
 ## 项目结构
 
@@ -518,7 +562,9 @@ small-gpt/
 │   ├── day-06-execution-report.md
 │   ├── day-06-model-design.md
 │   ├── day-07-execution-report.md
-│   └── day-07-training-system-design.md
+│   ├── day-07-training-system-design.md
+│   ├── day-08-resource-calibration-design.md
+│   └── day-08-resource-calibration-report.md
 ├── scripts/
 │   ├── build_fineweb_edu_corpus.py
 │   ├── check_checkpoint_resume.py
@@ -533,6 +579,7 @@ small-gpt/
 │   ├── inspect_model.py
 │   ├── inspect_tokenized_data.py
 │   ├── prepare_data.py
+│   ├── probe_baseline_resources.py
 │   ├── tokenize_corpus.py
 │   ├── train_gpt.py
 │   └── train_tokenizer.py
@@ -553,6 +600,7 @@ small-gpt/
 │   ├── test_optimizer.py
 │   ├── test_precision.py
 │   ├── test_run_logging.py
+│   ├── test_resource_probe.py
 │   ├── test_scheduler.py
 │   ├── test_streaming_data_pipeline.py
 │   ├── test_tokenization.py
@@ -579,6 +627,7 @@ small-gpt/
 │   ├── loop.py                   # log/eval/save interval 主循环
 │   ├── optimizer.py              # AdamW 参数分组
 │   ├── precision.py              # FP32 / CUDA BF16 policy
+│   ├── resource_probe.py         # 隔离候选、显存/吞吐证据与推荐
 │   ├── run_logging.py            # run 目录与 JSONL 指标
 │   ├── scheduler.py              # warmup + cosine
 │   ├── state.py                  # trainer counters
@@ -597,6 +646,7 @@ small-gpt/
 - [x] Day 5：构建 tokenized binary、文档索引、Dataset 和 DataLoader
 - [x] Day 6：手写 Causal Self-Attention、Decoder-only GPT 并完成模型验收
 - [x] Day 7：实现训练循环、优化器、调度器、评估、日志与 checkpoint 恢复
+- [ ] Day 8：资源定标、配置冻结与 531 项回归已通过；commit、push 待完成
 - [ ] 采集并验证正式训练语料
 - [ ] 在租用 GPU 上完成正式预训练
 - [ ] 实现文本生成与模型评估
@@ -619,11 +669,13 @@ small-gpt/
 - [Day 6 执行报告](reports/day-06-execution-report.md)
 - [Day 7 训练系统设计](reports/day-07-training-system-design.md)
 - [Day 7 执行报告](reports/day-07-execution-report.md)
+- [Day 8 资源定标探针设计](reports/day-08-resource-calibration-design.md)
+- [Day 8 RTX 5090 资源定标执行报告](reports/day-08-resource-calibration-report.md)
 
 ## 当前阶段
 
-Day 7 本地训练系统已完成。项目现在能够从真实 tokenized FineWeb-Edu Pilot 构建确定性训练 batch，驱动手写 Decoder-only GPT 完成 AdamW 更新、warmup/cosine 调度、FP32/BF16 计算、validation、JSONL 日志、原子 checkpoint 和 strict resume。
+Day 8 的 GPU 实验阶段已经结束。33,833,984 参数 Baseline 已在 RTX 5090 上冻结 `micro_batch_size=16`、`gradient_accumulation_steps=8`、`num_workers=4`、`pin_memory=false`，形成 65,536 tokens/update、4,578 total updates 和 92 warmup updates 的可执行计划。
 
-2,508,032 参数 Debug 模型已在本地 `cuda:0` 上完成 200 updates / 102,400 tokens 的真实 Pilot 训练。train loss 从 `9.722784` 降至 `7.447512`，十个 validation 点从 `9.329641` 持续降至 `7.517156`；BF16 smoke、step 5 → step 10 正式 resume、下一 batch/LR/RNG 恢复和两个 interval checkpoint 均通过验收。Day 1～Day 7 完整回归为 `508 passed in 13.49s`。
+真实 Pilot 上的 isolated sweep、BF16 dry-run、25-step 短跑、step 10/20 validation、独立 resume 对照和正式入口 20 → 25 resume 均通过。A57 证据包已在本地核对 SHA，A57 与 F19 均由用户确认关机。
 
-下一阶段将在用户明确授权后进入 AutoDL/Baseline 资源定标：先探测 micro-batch、gradient accumulation、workers、显存和吞吐，再执行短 BF16/checkpoint smoke。350M Full 语料和 300M-token 正式预训练仍未启动，当前 Debug/Pilot 结果不能作为 Baseline 模型质量结论。
+当前 Day 8 按 96% 记录：四字段冻结和报告已经应用，83 项定向测试、531 项完整回归与 `git diff --check` 均通过。剩余工作是最终审查 diff、commit、push 并确认 `HEAD == origin/main`。在 Git 门完成以及 Full corpus 独立验证前，不允许启动 300M-token 正式预训练。当前 Pilot 短跑结果也不能作为模型质量结论。

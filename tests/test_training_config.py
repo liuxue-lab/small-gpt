@@ -80,7 +80,7 @@ def test_debug_resolved_plan_is_exact():
     assert plan.token_overshoot == 0
 
 
-def test_baseline_contract_stays_resource_unresolved():
+def test_baseline_contract_uses_frozen_rtx5090_resources():
     config = TrainingConfig.from_yaml(BASELINE_PATH)
 
     assert config.device == "cuda"
@@ -88,24 +88,26 @@ def test_baseline_contract_stays_resource_unresolved():
     assert config.context_length == 512
     assert config.max_steps is None
     assert config.target_tokens == 300_000_000
-    assert config.micro_batch_size is None
-    assert config.gradient_accumulation_steps is None
+    assert config.micro_batch_size == 16
+    assert config.gradient_accumulation_steps == 8
     assert config.warmup_steps is None
     assert config.warmup_ratio == pytest.approx(0.02)
-    assert config.unresolved_fields == (
-        "micro_batch_size",
-        "gradient_accumulation_steps",
-        "num_workers",
-        "pin_memory",
-    )
-    assert config.is_execution_ready is False
+    assert config.num_workers == 4
+    assert config.pin_memory is False
+    assert config.unresolved_fields == ()
+    assert config.is_execution_ready is True
 
 
-def test_baseline_cannot_resolve_before_gpu_resource_probe():
-    config = TrainingConfig.from_yaml(BASELINE_PATH)
+def test_baseline_resolved_plan_matches_day8_rtx5090_freeze():
+    plan = TrainingConfig.from_yaml(BASELINE_PATH).resolve()
 
-    with pytest.raises(TrainingConfigError, match="unresolved execution fields"):
-        config.resolve()
+    assert plan.tokens_per_micro_step == 8_192
+    assert plan.tokens_per_update == 65_536
+    assert plan.total_updates == 4_578
+    assert plan.warmup_updates == 92
+    assert plan.planned_tokens == 300_023_808
+    assert plan.target_tokens == 300_000_000
+    assert plan.token_overshoot == 23_808
 
 
 def test_resolved_target_token_plan_uses_ceil_and_records_overshoot():
