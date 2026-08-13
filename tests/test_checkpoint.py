@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 from copy import deepcopy
@@ -30,6 +31,7 @@ from train import (
     build_scheduler,
     capture_rng_state,
     load_checkpoint,
+    load_model_checkpoint,
     restore_rng_state,
     save_checkpoint,
 )
@@ -91,11 +93,30 @@ def checkpoint_identity() -> CheckpointIdentity:
 def resolved_config(config: TrainingConfig) -> dict:
     return {
         "schema_version": 1,
-        "model": {"architecture": "tiny-dropout-lm"},
+        "project_name": config.project_name,
+        "model": {
+            "architecture": "tiny-dropout-lm",
+            "context_length": config.context_length,
+            "vocab_size": config.vocab_size,
+        },
         "training": config.to_dict(),
         "plan": config.resolve().to_dict(),
         "runtime": {"device": "cpu", "precision": "fp32"},
     }
+
+
+def identity_for_model_config(model_config: dict) -> CheckpointIdentity:
+    encoded = json.dumps(
+        model_config,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return replace(
+        checkpoint_identity(),
+        model_config_sha256=hashlib.sha256(encoded).hexdigest(),
+    )
 
 
 def fixed_batches() -> list[tuple[torch.Tensor, torch.Tensor]]:
@@ -211,7 +232,12 @@ def assert_update_equivalent(first, second) -> None:
     assert first.tokens == second.tokens
 
 
-def save_harness(harness: Harness, path: Path):
+def save_harness(
+    harness: Harness,
+    path: Path,
+    *,
+    identity: CheckpointIdentity | None = None,
+):
     return save_checkpoint(
         path,
         model=harness.model,
@@ -220,8 +246,15 @@ def save_harness(harness: Harness, path: Path):
         state=harness.state,
         plan=harness.config.resolve(),
         resolved_config=resolved_config(harness.config),
-        identity=checkpoint_identity(),
+        identity=checkpoint_identity() if identity is None else identity,
     )
+
+
+def save_model_only_fixture(harness: Harness, path: Path):
+    snapshot = resolved_config(harness.config)
+    identity = identity_for_model_config(snapshot["model"])
+    save_harness(harness, path, identity=identity)
+    return snapshot["model"], identity
 
 
 def load_into_new_components(
@@ -300,6 +333,196 @@ def test_atomic_save_writes_complete_payload_and_commits_save_step(tmp_path):
     assert payload["scaler_state_dict"] is None
     assert payload["trainer_state"]["last_save_step"] == 1
     assert payload["resolved_config"]["plan"] == config.resolve().to_dict()
+
+
+def test_model_only_load_restores_strict_weights_without_rng_side_effects(tmp_path):
+    seed_all(20)
+    config = checkpoint_config()
+    harness = build_harness(config)
+    run_one_update(harness, fixed_batches()[0])
+    path = tmp_path / "model-only.pt"
+    expected_model_config, expected_identity = save_model_only_fixture(
+        harness,
+        path,
+    )
+
+    seed_all(20260814)
+    loaded_model = TinyDropoutLanguageModel(vocab_size=config.vocab_size)
+    python_rng_before = random.getstate()
+    numpy_rng_before = np.random.get_state()
+    torch_rng_before = torch.get_rng_state().clone()
+
+    loaded = load_model_checkpoint(
+        path,
+        model=loaded_model,
+        expected_model_config=expected_model_config,
+        expected_run_id="checkpoint-run",
+    )
+
+    assert loaded.record.path == path.resolve()
+    assert loaded.record.global_step == 1
+    assert loaded.record.tokens_seen == 8
+    assert loaded.state.state_dict() == harness.state.state_dict()
+    assert loaded.identity == expected_identity
+    assert loaded.resolved_config == resolved_config(config)
+    assert_nested_equal(
+        loaded_model.state_dict(),
+        harness.model.state_dict(),
+        "model_only",
+    )
+    assert random.getstate() == python_rng_before
+    numpy_rng_after = np.random.get_state()
+    assert numpy_rng_after[0] == numpy_rng_before[0]
+    np.testing.assert_array_equal(numpy_rng_after[1], numpy_rng_before[1])
+    assert numpy_rng_after[2:] == numpy_rng_before[2:]
+    assert torch.equal(torch.get_rng_state(), torch_rng_before)
+
+
+def test_model_only_load_ignores_optimizer_scheduler_scaler_and_rng_payloads(tmp_path):
+    seed_all(21)
+    config = checkpoint_config()
+    harness = build_harness(config)
+    run_one_update(harness, fixed_batches()[0])
+    valid_path = tmp_path / "valid-model-only.pt"
+    expected_model_config, _identity = save_model_only_fixture(
+        harness,
+        valid_path,
+    )
+    payload = torch.load(valid_path, map_location="cpu", weights_only=True)
+    payload["optimizer_state_dict"] = "unused by model-only loading"
+    payload["scheduler_state_dict"] = None
+    payload["scaler_state_dict"] = {"unused": True}
+    payload["rng_state"] = "unused by model-only loading"
+    isolated_path = tmp_path / "isolated-model-only.pt"
+    torch.save(payload, isolated_path)
+    loaded_model = TinyDropoutLanguageModel(vocab_size=config.vocab_size)
+
+    loaded = load_model_checkpoint(
+        isolated_path,
+        model=loaded_model,
+        expected_model_config=expected_model_config,
+        expected_run_id="checkpoint-run",
+    )
+
+    assert loaded.state.global_step == 1
+    assert_nested_equal(
+        loaded_model.state_dict(),
+        harness.model.state_dict(),
+        "isolated_model_only",
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("missing_key", "keys do not match"),
+        ("wrong_shape", "shape does not match"),
+        ("non_finite", "non-finite"),
+    ),
+)
+def test_model_only_load_rejects_bad_model_state_before_mutation(
+    tmp_path,
+    mutation,
+    message,
+):
+    seed_all(22)
+    config = checkpoint_config()
+    harness = build_harness(config)
+    run_one_update(harness, fixed_batches()[0])
+    valid_path = tmp_path / f"valid-{mutation}.pt"
+    expected_model_config, _identity = save_model_only_fixture(
+        harness,
+        valid_path,
+    )
+    payload = torch.load(valid_path, map_location="cpu", weights_only=True)
+    if mutation == "missing_key":
+        payload["model_state_dict"].pop("projection.bias")
+    elif mutation == "wrong_shape":
+        payload["model_state_dict"]["projection.bias"] = torch.zeros(1)
+    else:
+        invalid = payload["model_state_dict"]["projection.bias"].clone()
+        invalid[0] = float("nan")
+        payload["model_state_dict"]["projection.bias"] = invalid
+    invalid_path = tmp_path / f"invalid-{mutation}.pt"
+    torch.save(payload, invalid_path)
+    loaded_model = TinyDropoutLanguageModel(vocab_size=config.vocab_size)
+    before = deepcopy(loaded_model.state_dict())
+
+    with pytest.raises(CheckpointLoadError, match=message):
+        load_model_checkpoint(
+            invalid_path,
+            model=loaded_model,
+            expected_model_config=expected_model_config,
+            expected_run_id="checkpoint-run",
+        )
+
+    assert_nested_equal(loaded_model.state_dict(), before, "unmodified_model")
+
+
+@pytest.mark.parametrize(
+    ("drift", "message"),
+    (
+        ("model_config", "model config"),
+        ("run_id", "run_id"),
+    ),
+)
+def test_model_only_load_rejects_active_compatibility_drift_before_mutation(
+    tmp_path,
+    drift,
+    message,
+):
+    seed_all(23)
+    config = checkpoint_config()
+    harness = build_harness(config)
+    run_one_update(harness, fixed_batches()[0])
+    path = tmp_path / f"compatibility-{drift}.pt"
+    expected_model_config, _identity = save_model_only_fixture(harness, path)
+    active_model_config = deepcopy(expected_model_config)
+    expected_run_id = "checkpoint-run"
+    if drift == "model_config":
+        active_model_config["architecture"] = "another-model"
+    else:
+        expected_run_id = "another-run"
+    loaded_model = TinyDropoutLanguageModel(vocab_size=config.vocab_size)
+    before = deepcopy(loaded_model.state_dict())
+
+    with pytest.raises(CheckpointCompatibilityError, match=message):
+        load_model_checkpoint(
+            path,
+            model=loaded_model,
+            expected_model_config=active_model_config,
+            expected_run_id=expected_run_id,
+        )
+
+    assert_nested_equal(loaded_model.state_dict(), before, "unmodified_model")
+
+
+def test_model_only_load_rejects_internal_model_identity_drift(tmp_path):
+    seed_all(24)
+    config = checkpoint_config()
+    harness = build_harness(config)
+    run_one_update(harness, fixed_batches()[0])
+    valid_path = tmp_path / "valid-identity-model-only.pt"
+    expected_model_config, _identity = save_model_only_fixture(
+        harness,
+        valid_path,
+    )
+    payload = torch.load(valid_path, map_location="cpu", weights_only=True)
+    payload["identity"]["model_config_sha256"] = "9" * 64
+    invalid_path = tmp_path / "invalid-identity-model-only.pt"
+    torch.save(payload, invalid_path)
+    loaded_model = TinyDropoutLanguageModel(vocab_size=config.vocab_size)
+    before = deepcopy(loaded_model.state_dict())
+
+    with pytest.raises(CheckpointLoadError, match="model config does not match identity"):
+        load_model_checkpoint(
+            invalid_path,
+            model=loaded_model,
+            expected_model_config=expected_model_config,
+            expected_run_id="checkpoint-run",
+        )
+
+    assert_nested_equal(loaded_model.state_dict(), before, "unmodified_model")
 
 
 def test_failed_atomic_save_preserves_previous_file_and_state(tmp_path, monkeypatch):

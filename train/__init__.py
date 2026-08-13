@@ -16,6 +16,7 @@ from .checkpoint import (
     build_checkpoint_identity,
     capture_rng_state,
     load_checkpoint,
+    load_model_checkpoint,
     restore_rng_state,
     save_checkpoint,
 )
@@ -134,6 +135,7 @@ __all__ = [
     "evaluate_model",
     "initialize_run_directory",
     "load_checkpoint",
+    "load_model_checkpoint",
     "open_existing_run_directory",
     "partition_parameters",
     "read_metric_events",

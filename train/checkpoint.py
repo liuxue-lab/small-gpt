@@ -17,7 +17,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from .config import ResolvedTrainingPlan
+from .config import ResolvedTrainingPlan, TrainingConfig
 from .scheduler import WarmupCosineScheduler
 from .state import TrainerState
 
@@ -675,6 +675,172 @@ def _identity_mismatches(
         for field in fields(CheckpointIdentity)
         if getattr(expected, field.name) != getattr(actual, field.name)
     ]
+
+
+def _model_state_preflight(
+    model: nn.Module,
+    saved_state: Mapping[str, Any],
+) -> None:
+    """Reject incompatible or non-finite model state before any parameter copy."""
+
+    active_state = model.state_dict()
+    saved_keys = set(saved_state)
+    active_keys = set(active_state)
+    missing_keys = active_keys - saved_keys
+    unexpected_keys = saved_keys - active_keys
+    if missing_keys or unexpected_keys:
+        raise CheckpointCompatibilityError(
+            "checkpoint model state keys do not match the active model: "
+            f"missing={sorted(map(str, missing_keys))}, "
+            f"unexpected={sorted(map(str, unexpected_keys))}"
+        )
+
+    for name, active_tensor in active_state.items():
+        saved_tensor = saved_state[name]
+        if not isinstance(saved_tensor, torch.Tensor):
+            raise CheckpointLoadError(
+                f"checkpoint model state {name!r} must be a Tensor"
+            )
+        if saved_tensor.shape != active_tensor.shape:
+            raise CheckpointCompatibilityError(
+                f"checkpoint model state {name!r} shape does not match the "
+                f"active model: checkpoint={tuple(saved_tensor.shape)}, "
+                f"active={tuple(active_tensor.shape)}"
+            )
+        if saved_tensor.dtype != active_tensor.dtype:
+            raise CheckpointCompatibilityError(
+                f"checkpoint model state {name!r} dtype does not match the "
+                f"active model: checkpoint={saved_tensor.dtype}, "
+                f"active={active_tensor.dtype}"
+            )
+        if (saved_tensor.is_floating_point() or saved_tensor.is_complex()) and not bool(
+            torch.isfinite(saved_tensor).all().item()
+        ):
+            raise CheckpointLoadError(
+                f"checkpoint model state {name!r} contains non-finite values"
+            )
+
+
+def load_model_checkpoint(
+    path: str | Path,
+    *,
+    model: nn.Module,
+    expected_model_config: Mapping[str, Any],
+    expected_run_id: str,
+) -> LoadedCheckpoint:
+    """Strictly restore model weights without optimizer, scheduler, or RNG state."""
+
+    if not isinstance(model, nn.Module):
+        raise TypeError(f"model must be an nn.Module, got {type(model)!r}")
+    if not isinstance(expected_run_id, str) or not expected_run_id.strip():
+        raise TypeError("expected_run_id must be a non-empty string")
+    try:
+        active_model_config = _normalized_json_mapping(
+            expected_model_config,
+            field="expected_model_config",
+        )
+        _model_device(model)
+    except (CheckpointError, TypeError, ValueError) as error:
+        raise CheckpointLoadError(
+            f"model-only checkpoint preflight failed: {error}"
+        ) from error
+
+    checkpoint_path = Path(path).resolve()
+    payload = _read_checkpoint_payload(checkpoint_path)
+    try:
+        saved_identity = CheckpointIdentity.from_mapping(payload["identity"])
+    except CheckpointIdentityError as error:
+        raise CheckpointLoadError(
+            f"checkpoint identity is invalid: {error}"
+        ) from error
+
+    try:
+        saved_config = _normalized_json_mapping(
+            payload["resolved_config"],
+            field="checkpoint resolved_config",
+        )
+        if saved_config.get("schema_version") != 1:
+            raise ValueError("resolved_config.schema_version must equal 1")
+        saved_model_config = _normalized_json_mapping(
+            saved_config.get("model"),
+            field="checkpoint resolved_config.model",
+        )
+        raw_training_config = saved_config.get("training")
+        if not isinstance(raw_training_config, Mapping):
+            raise TypeError("checkpoint resolved_config.training must be a mapping")
+        training_config = TrainingConfig(**dict(raw_training_config))
+        plan = training_config.resolve()
+        _resolved_config_snapshot(saved_config, plan=plan)
+        if saved_config.get("project_name") != training_config.project_name:
+            raise ValueError(
+                "resolved_config.project_name does not match training.project_name"
+            )
+        if (
+            saved_model_config.get("context_length") != training_config.context_length
+            or saved_model_config.get("vocab_size") != training_config.vocab_size
+        ):
+            raise ValueError(
+                "resolved model dimensions do not match the training configuration"
+            )
+    except (TypeError, ValueError) as error:
+        raise CheckpointLoadError(
+            f"checkpoint resolved config is invalid: {error}"
+        ) from error
+
+    internal_model_sha256 = _mapping_sha256(
+        saved_model_config,
+        field="checkpoint resolved_config.model",
+    )
+    if internal_model_sha256 != saved_identity.model_config_sha256:
+        raise CheckpointLoadError(
+            "checkpoint model config does not match identity.model_config_sha256"
+        )
+    if saved_model_config != active_model_config:
+        raise CheckpointCompatibilityError(
+            "checkpoint model config does not match the active model config"
+        )
+
+    try:
+        restored_state = TrainerState.from_state_dict(payload["trainer_state"])
+        _validate_state_boundary(state=restored_state, plan=plan)
+    except Exception as error:
+        raise CheckpointLoadError(
+            f"checkpoint TrainerState is invalid: {error}"
+        ) from error
+    if restored_state.run_id != expected_run_id:
+        raise CheckpointCompatibilityError(
+            "checkpoint run_id does not match the requested run: "
+            f"checkpoint={restored_state.run_id!r}, "
+            f"requested={expected_run_id!r}"
+        )
+    if restored_state.last_save_step != restored_state.global_step:
+        raise CheckpointLoadError(
+            "checkpoint TrainerState was not committed at its saved step"
+        )
+
+    saved_model_state = payload["model_state_dict"]
+    if not isinstance(saved_model_state, Mapping):
+        raise CheckpointLoadError("checkpoint model state must be a mapping")
+    _model_state_preflight(model, saved_model_state)
+    try:
+        model.load_state_dict(saved_model_state, strict=True)
+    except Exception as error:
+        raise CheckpointLoadError(
+            f"checkpoint model state could not be restored: {error}"
+        ) from error
+
+    record = CheckpointRecord(
+        path=checkpoint_path,
+        file_size=checkpoint_path.stat().st_size,
+        global_step=restored_state.global_step,
+        tokens_seen=restored_state.tokens_seen,
+    )
+    return LoadedCheckpoint(
+        record=record,
+        state=restored_state,
+        identity=saved_identity,
+        resolved_config=saved_config,
+    )
 
 
 def load_checkpoint(
