@@ -1984,3 +1984,364 @@ D:\code\small-gpt-day09-evidence
 5. 重新验证 Full/tokenizer/Git/GPU identity；
 6. 获得新的 300M-token 长跑授权；
 7. 再启动 4,578-update 正式训练。
+
+## Day 10：300M-token 正式预训练、最终权重与证据归档
+
+### 日期
+
+2026-08-13～2026-08-14
+
+### 今日目标
+
+在 Day 9 的 Full 数据、Tokenizer、训练系统和资源配置均已冻结的前提下：
+
+1. 迁移到可用的 RTX 5090 实例，同时保持 Full/Tokenized Full 身份不变；
+2. 将远端代码精确推进到 Day 9 文档终点 `07c22a4`；
+3. 重新核对 Python/PyTorch/CUDA/BF16、GPU、manifest、Tokenizer 和 Git identity；
+4. 先执行不写运行产物的正式 dry-run；
+5. 获得 300M-token 长跑的独立授权；
+6. 启动唯一正式 run，完成 4,578 updates；
+7. 监控 warmup、validation、checkpoint、GPU 和异常；
+8. 严格加载 final checkpoint 并验证可恢复状态；
+9. 验证 4,593 个 JSONL events 的连续性；
+10. 下载并校验轻量证据包与 final checkpoint；
+11. 在所有远端任务结束后关机，不释放实例。
+
+### 授权与失败策略
+
+用户明确授权：
+
+```text
+Authorization=FORMAL_300M_APPROVED
+TargetUpdates=4578
+RuntimeLimit=NONE
+AutomaticResume=False
+FailurePolicy=STOP_AND_REPORT
+CompletionAction=REMIND_SHUTDOWN_NOT_RELEASE
+```
+
+这意味着正常运行必须到 step 4,578；若异常则停止、保留现场并汇报，不能自动 resume。训练结束也不能自动释放实例。
+
+### 实例迁移
+
+原 C14 当时没有可用 GPU 槽位，因此将系统盘和数据盘克隆到同区域 D34，而不是重新构建 350M Full 或 Tokenized Full。
+
+| 项目 | D34 结果 |
+| --- | --- |
+| Host | `autodl-container-8me3mxapw7-50c69103` |
+| GPU | NVIDIA GeForce RTX 5090 |
+| VRAM | 32,607 MiB |
+| Driver | 580.95.05 |
+| CUDA Runtime | 13.0 |
+| Python | 3.12.3 |
+| PyTorch | 2.12.1+cu130 |
+| cuDNN | 92000 |
+| `tokenizers` | 0.23.1 |
+| CPU / RAM | 25 vCPU / 92 GB（控制台）；容器可见内存更大 |
+| 数据盘 | 50 GB |
+| 价格 | ¥2.78/小时 |
+
+D34 的 driver 与 C14 有小版本差异，但 PyTorch CUDA、BF16、cuDNN、GPU 可见性和正式 dry-run 均通过，因此没有把小版本差异误判为失败，也没有重跑全部 Day 8 sweep。
+
+克隆资产检查：
+
+```text
+Full source corpus     ≈ 1.7G
+Tokenized Full         ≈ 741M
+Day 9 source cache     ≈ 2.1G
+Day 9 smoke checkpoint = 406108827 bytes
+Source manifest        = present
+Tokenized manifest     = present
+Staging directories    = absent
+```
+
+### GitHub 网络与 Git bundle
+
+D34 直接执行 GitHub fetch 时先遇到：
+
+```text
+GnuTLS recv error (-110): The TLS connection was non-properly terminated
+```
+
+限定 120 秒、强制 HTTP/1.1 的重试又得到 exit 124。没有 reset、没有伪造 `origin/main`，也没有在不确定状态继续训练。
+
+本地 Windows 仓库在权威提交 `07c22a42a696e4d2bab7e6396fcb4c417dc5f63e` 创建 Git bundle，上传 D34 后先 fetch 到 `FETCH_HEAD`，确认 diff 只有 Day 9 的 README、daily log 与正式报告，再执行 fast-forward：
+
+```text
+23c63a6 -> 07c22a4
+MergeExit=0
+HEAD=07c22a42a696e4d2bab7e6396fcb4c417dc5f63e
+worktree=clean
+```
+
+D34 的 `origin/main` 因网络失败仍指向 `23c63a6`，所以状态显示 `[ahead 1]`。这只是远端跟踪引用陈旧，不是 source dirty；正式 run metadata 明确记录 `source_commit=07c22a4` 和 `source_dirty=false`。
+
+### 冻结身份
+
+```text
+Source manifest SHA-256
+14c69dc545838b426e29162c73132cfe444bb2cc56b72c80bb4929f3c65ca96a
+
+Tokenized manifest SHA-256
+ce7cd91075c7c666c427e1aaa286096a7f386643f3a76de3c26ef770d6cce67e
+
+Dataset fingerprint
+39dab5bacdf8719bbc849e85ddcd7422cba5777fc044b437d050a49b87ab174f
+
+Tokenizer SHA-256
+b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5
+
+Source commit
+07c22a42a696e4d2bab7e6396fcb4c417dc5f63e
+```
+
+### 正式 dry-run
+
+Run ID：
+
+```text
+day10-full-dry-run-20260813-232617
+```
+
+结果：
+
+```text
+ModelParameters=33833984
+Device=cuda:0
+Precision=bf16
+Autocast=True
+GradScaler=False
+MicroBatchSize=16
+GradientAccumulationSteps=8
+TokensPerUpdate=65536
+TotalUpdates=4578
+WarmupUpdates=92
+PlannedTokens=300023808
+SampleInput=(16, 512)
+SampleTarget=(16, 512)
+CausalShift=True
+SourceDirty=False
+DryRunExit=0
+RunPathExists=0
+CheckpointPathExists=0
+```
+
+CLI 中的 `Batch source: pilot` 是训练器历史枚举名称；真实 `--manifest`、run metadata、dataset SHA 和 fingerprint 都绑定 `data/tokenized/fineweb_edu_full/manifest.json`，不能据此误判为读取 Pilot 数据。
+
+### 正式 run
+
+```text
+RunID=baseline-full-300m-20260813-232952
+ControlStart=2026-08-13T23:30:11+08:00
+LaunchTime=2026-08-13T23:32:45+08:00
+FinalLogMTime=2026-08-13T23:55:31.591283290+08:00
+```
+
+运行配置：
+
+| 项目 | 数值 |
+| --- | ---: |
+| Parameters | 33,833,984 |
+| Micro batch | 16 |
+| Gradient accumulation | 8 |
+| Context length | 512 |
+| Tokens/micro-step | 8,192 |
+| Tokens/update | 65,536 |
+| Target tokens | 300,000,000 |
+| Planned tokens | 300,023,808 |
+| Overshoot | 23,808 |
+| Total updates | 4,578 |
+| Warmup updates | 92 |
+| Max/min LR | 3e-4 / 3e-5 |
+| Eval interval/batches | 500 / 100 |
+| Save interval | 1,000 |
+| Workers / pin memory | 4 / false |
+
+正式进程以 detached wrapper 启动，记录 shell PID、Python PID、stdout、exit code 和 30 秒 GPU 采样。启动时只有一个 trainer；另外四个同命令行 Python PID 是 `num_workers=4` 的 DataLoader workers，不是四个重复训练器。
+
+### 训练结果
+
+```text
+TrainExit=0
+FinalGlobalStep=4578
+FinalTokensSeen=300023808
+Evaluations=9
+Checkpoints=5
+KnownErrors=0
+```
+
+关键训练点：
+
+| Step | Tokens seen | Train loss | LR | Grad norm |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 65,536 | 9.816444 | 3.26087e-6 | 7.308705 |
+| 92 | 6,029,312 | 6.701193 | 3.00000e-4 | 0.483536 |
+| 500 | 32,768,000 | 5.273014 | 2.94551e-4 | 0.781865 |
+| 1,000 | 65,536,000 | 4.582271 | 2.73659e-4 | 1.080801 |
+| 2,000 | 131,072,000 | 4.028144 | 1.96435e-4 | 0.788449 |
+| 3,000 | 196,608,000 | 3.908527 | 1.04407e-4 | 0.744632 |
+| 4,000 | 262,144,000 | 3.845382 | 4.09142e-5 | 0.749969 |
+| 4,500 | 294,912,000 | 3.807149 | 3.02014e-5 | 0.770310 |
+| 4,578 | 300,023,808 | 3.830253 | 3.00000e-5 | 0.814144 |
+
+step 1 的 grad norm 和吞吐包含冷启动影响；后续数值有限。日志中的 grad norm 是裁剪前范数，因此 step 1,000 的 `1.080801` 不代表 `gradient_clip=1.0` 失效。
+
+### Validation
+
+每次 evaluation 使用 100 batches / 819,200 validation tokens，validation tokens 不计入训练预算。
+
+| Step | Tokens seen | Validation loss | Perplexity |
+| ---: | ---: | ---: | ---: |
+| 500 | 32,768,000 | 5.235283 | 187.782316 |
+| 1,000 | 65,536,000 | 4.583346 | 97.841230 |
+| 1,500 | 98,304,000 | 4.259436 | 70.770092 |
+| 2,000 | 131,072,000 | 4.105180 | 60.653632 |
+| 2,500 | 163,840,000 | 4.004211 | 54.828556 |
+| 3,000 | 196,608,000 | 3.935036 | 51.163982 |
+| 3,500 | 229,376,000 | 3.884580 | 48.646510 |
+| 4,000 | 262,144,000 | 3.852903 | 47.129668 |
+| 4,500 | 294,912,000 | 3.832705 | 46.187310 |
+
+validation loss 九次连续下降；perplexity 相对第一次下降约 75.4%。该结论只适用于冻结 validation 抽样，不代表 test perplexity 或开放式生成质量已经完成。
+
+### Metrics 连续性
+
+`metrics.jsonl` 共 4,593 个 JSON objects：
+
+```text
+run_start    = 1
+train_update = 4578
+evaluation   = 9
+checkpoint   = 5
+```
+
+完整验证确认：
+
+- run 从 step 0 开始，`resume_checkpoint=null`；
+- train steps 精确等于 1～4,578；
+- 每步 `tokens_seen = step × 65,536`；
+- 每步 8 micro steps / 128 samples；
+- 所有 train loss、grad norm、LR、throughput 和 elapsed time 有限；
+- LR 在 step 92 到达 3e-4，之后单调 cosine 衰减到 3e-5；
+- 9 个 evaluation 和 5 个 checkpoint step 全部正确；
+- 没有 step 回退、重复、断裂或 resume 拼接。
+
+聚合 update throughput：
+
+```text
+223777.323900 tokens/s
+```
+
+### GPU 与时间
+
+30 秒采样器在正式 run 中后段记录 41 个样本：
+
+| 指标 | 最小 | 平均 | 最大 |
+| --- | ---: | ---: | ---: |
+| GPU utilization | 76% | 82.37% | 88% |
+| Memory used | 6,295 MiB | 6,295 MiB | 6,295 MiB |
+| Temperature | 74°C | 75.39°C | 77°C |
+| Power | 427.35 W | 472.74 W | 495.17 W |
+
+采样范围为 23:35:16～23:55:20，不覆盖最初约 2.5 分钟，因此这里只描述中后段稳定状态。
+
+正式 trainer 从 launch 到最终日志约 22 分 47 秒；4,578 个 update 的 elapsed 合计约 1,340.72 秒，9 次 evaluation 合计约 12.30 秒，5 次 checkpoint save 合计约 5.14 秒。按 ¥2.78/小时估算，正式 run 本身约 ¥1.06；这不是 D34 克隆、preflight、重启归档在内的最终账单。
+
+### Checkpoint
+
+| Step | Tokens seen | Bytes | SHA-256 |
+| ---: | ---: | ---: | --- |
+| 1,000 | 65,536,000 | 406,108,827 | `846565575f42253474b0e21ab162e97144ff1acee56d4efd51cecf0794ed5657` |
+| 2,000 | 131,072,000 | 406,108,827 | `686fac55259d725452fe7a86e1f6ef450366412546a9a573965351cf05e2ea9f` |
+| 3,000 | 196,608,000 | 406,108,827 | `3c3e8af0cb147cad49feb476c9ae213f368f1ef7fc24c6c9c0fa6c4a2fe9f895` |
+| 4,000 | 262,144,000 | 406,108,827 | `6dbb5b1ffbfe4de60caabab45d11f883a90f4773457a1970483ef2f7c0b5d9c4` |
+| 4,578 | 300,023,808 | 406,108,827 | `a39f8378ebe4012afb992be451d355e814b856ffb5e690ac011758f9db614b51` |
+
+final checkpoint 完成 CPU 严格加载：
+
+- 69 个 model state entries、68 个 unique storages、33,833,984 unique parameters；
+- tied embedding/head 权重一致；
+- 所有模型和 optimizer tensors finite；
+- AdamW 68 个 parameter states，两个参数组各 34；
+- optimizer step=4,578；
+- scheduler total=4,578、last applied update=4,577、final LR=3e-5；
+- TrainerState step/micro steps/tokens/samples 守恒；
+- Python、NumPy、Torch CPU 和 CUDA RNG 完整；
+- resolved plan、Full/Tokenizer/source identity 完整；
+- BF16 不使用 GradScaler，`scaler_state_dict=None` 是预期状态。
+
+### 证据与本地备份
+
+轻量证据包：
+
+```text
+File    = small-gpt-day10-evidence-baseline-full-300m-20260813-232952.tar.gz
+Bytes   = 301228
+SHA256  = a24371915c8de0b34eeabb23b62036b97bccbc83629981f6eccb22378483eb20
+Entries = 31
+```
+
+远端内部 29 个 payload SHA 全部通过；Windows 下载后 archive bytes、SHA、31 entries 和可读性全部通过。解压后共有 30 个文件，其中 29 个受 `SHA256SUMS.txt` 保护，失败数为 0。
+
+final checkpoint Windows 本地验证：
+
+```text
+Bytes  = 406108827
+SHA256 = a39f8378ebe4012afb992be451d355e814b856ffb5e690ac011758f9db614b51
+Result = PASS
+```
+
+仓库外备份目录：
+
+```text
+D:\model-backups\small-gpt\day10\baseline-full-300m-20260813-232952
+```
+
+该目录保存 final checkpoint、轻量 archive 和解压证据；未放入 `D:\code\small-gpt`，不会进入 Git。
+
+### 关键问题与处理
+
+| 问题 | 处理 |
+| --- | --- |
+| C14 无 GPU 槽位 | 克隆到 D34，逐项核对数据与 SHA，不重建 Full |
+| D34 GitHub TLS 失败和超时 | 使用本地权威 Git bundle，先验证 diff 再 fast-forward |
+| D34 `origin/main` 落后一提交 | 保留真实 tracking 状态；以 exact HEAD/source dirty/metadata 证明训练身份 |
+| `Batch source: pilot` 容易误读 | 以 Full manifest SHA、fingerprint 和 run metadata 判定真实数据 |
+| 四个同命令 Python PID | 识别为 DataLoader workers；GPU 只有一个 trainer |
+| JupyterLab 无法进入 checkpoint 目录 | 在 `/root/autodl-tmp` 建立同 inode 临时硬链接，下载验证后精确 unlink |
+| 长 Python 验证脚本粘贴损坏 | 语法阶段退出，没有加载或修改 checkpoint；改用短验证器 |
+| 训练后过早关机 | 重启完成持久性、证据和下载门；后续改为当天所有 RTX 5090 任务完成后再关机 |
+
+### Day 10 最终状态
+
+- [x] D34 克隆资产与关机后持久性通过；
+- [x] Git exact commit 和 clean worktree 通过；
+- [x] Full、Tokenized Full、Tokenizer 三个 SHA 通过；
+- [x] 正式 dry-run 不写产物；
+- [x] 独立 300M-token 授权；
+- [x] 唯一正式 run；
+- [x] 4,578 updates / 300,023,808 tokens；
+- [x] 9 次 validation；
+- [x] 5 个原子 checkpoint；
+- [x] exit code 0 / known errors 0；
+- [x] final checkpoint 内部恢复状态通过；
+- [x] metrics 全连续性通过；
+- [x] 轻量证据远端与本地 SHA 一致；
+- [x] final checkpoint 远端与本地 SHA 一致；
+- [x] D34 在最终远端保全门通过后关机；
+- [x] D34 未释放；
+- [x] 本地完整回归 `551 passed in 68.12s`；
+- [x] 正式预训练完成；
+- [ ] test loss/perplexity 未执行；
+- [ ] 文本生成与采样未执行；
+- [ ] 消融实验未执行。
+
+### 下一阶段
+
+1. 从仓库外备份加载 `step-00004578.pt`；
+2. 实现或验收正式生成入口；
+3. 在冻结 test split 上计算 loss/perplexity，避免把 validation 当 test；
+4. 用固定 prompts、seed、temperature、top-k/top-p 比较生成；
+5. 保留原始 checkpoint，不在评估时覆盖；
+6. 选择至少一个可解释消融实验；
+7. 所有大权重和生成产物继续放在 Git 之外。

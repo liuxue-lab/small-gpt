@@ -8,8 +8,8 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 当前阶段 | Day 9 Full source、Tokenized Full、真实 DataLoader 与单更新 smoke 已完成；300M 正式预训练未启动 |
-| 自动测试 | Day 9 最终本地 `551 passed in 42.46s`；AutoDL `551 passed, 2 warnings in 5.87s` |
+| 当前阶段 | Day 10 的 300M-token 正式预训练已完成；下一阶段为加载正式权重、生成、test 评估与消融 |
+| 自动测试 | Day 10 文档收口本地 `551 passed in 68.12s`；训练源码仍为 Day 9 冻结提交 `07c22a4` |
 | 数据集 | `HuggingFaceFW/fineweb-edu` / `sample-10BT` |
 | 数据访问方式 | 固定 revision、14 个显式 Parquet 源文件、经过 bytes/SHA 验证的可恢复本地 cache |
 | 数据管线 | 支持清洗、去重、划分、分片、恢复与完整性校验 |
@@ -28,8 +28,8 @@
 | Baseline 短跑 | BF16 25 updates / 1,638,400 tokens；validation、checkpoint 与 20→25 resume 均通过 |
 | Full source corpus | 338,849 文档、350,000,812 provided tokens、70 个 shard groups，完整验证通过 |
 | Tokenized Full | 379,587,945 model tokens、77 个 storage shards、759,175,890 payload bytes |
-| Full 单更新 | BF16 step 1 / 65,536 tokens；loss 9.816444；0 evaluation；1 个严格 checkpoint |
-| 正式预训练 | 300M tokens / 4,578 updates 尚未启动，仍需独立授权 |
+| Day 9 Full 单更新 | BF16 step 1 / 65,536 tokens；loss 9.816444；0 evaluation；1 个严格 checkpoint |
+| Day 10 正式预训练 | BF16 4,578 updates / 300,023,808 tokens；final train loss 3.830253；validation loss 3.832705 / perplexity 46.187310 |
 | Git 分支 | `main` |
 
 > FineWeb-Edu 的 `provided_token_count` 使用上游 Tokenizer 口径，只用于语料采集预算。当前项目 BPE 在全 Pilot 上产生 2,129,776 个模型 token，比 2,000,083 个 provided tokens 高约 6.48%。后续训练预算以项目 Tokenizer 的实际 token 数为准。
@@ -309,6 +309,47 @@ DataLoader 的 8 个候选全部成功，`workers=4, pin_memory=false` 以 246,5
 
 完整证据、选择理由、磁盘预算和正式训练硬门见 [Day 8 RTX 5090 Baseline 资源定标执行报告](reports/day-08-resource-calibration-report.md)。本轮只完成资源定标和短程工程验收，没有构建 Full，也没有启动 300M-token 正式训练。
 
+## Day 10 300M-token 正式预训练结果
+
+Day 10 在 AutoDL D34 的单卡 NVIDIA GeForce RTX 5090 上复用 Day 9 已冻结的 Full 数据、16K Tokenizer 和训练代码，以 clean source commit `07c22a42a696e4d2bab7e6396fcb4c417dc5f63e` 启动唯一正式 run：
+
+```text
+baseline-full-300m-20260813-232952
+```
+
+冻结计划与完成结果：
+
+| 项目 | 结果 |
+| --- | ---: |
+| Model parameters | 33,833,984 |
+| Precision | CUDA BF16 autocast；GradScaler disabled |
+| Micro batch / accumulation | 16 / 8 |
+| Context length | 512 |
+| Tokens/update | 65,536 |
+| Warmup / total updates | 92 / 4,578 |
+| Target / actual tokens | 300,000,000 / 300,023,808 |
+| First / final train loss | 9.816444 / 3.830253 |
+| Final validation loss | 3.832705 |
+| Final validation perplexity | 46.187310 |
+| Evaluation events | 9；step 500～4,500，每次 819,200 tokens |
+| Checkpoints | step 1,000 / 2,000 / 3,000 / 4,000 / 4,578 |
+| Aggregate update throughput | 223,777 tokens/s |
+| Train exit / known errors | 0 / 0 |
+
+固定 validation loss 从 step 500 的 `5.235283` 连续下降到 step 4,500 的 `3.832705`；perplexity 从 `187.782316` 降至 `46.187310`。`metrics.jsonl` 共 4,593 个 JSON objects：1 个 `run_start`、4,578 个连续 `train_update`、9 个 `evaluation` 和 5 个 `checkpoint`，没有 resume 拼接、step 回退、token 不守恒或非有限指标。
+
+最终 checkpoint：
+
+```text
+checkpoints/baseline-full-300m-20260813-232952/step-00004578.pt
+Bytes  = 406108827
+SHA256 = a39f8378ebe4012afb992be451d355e814b856ffb5e690ac011758f9db614b51
+```
+
+CPU 严格加载已验证 model、AdamW、scheduler、TrainerState、Python/NumPy/Torch CPU/CUDA RNG、resolved config、Tokenizer、Full manifest、dataset fingerprint 与 source commit。轻量证据包和 final checkpoint 都已下载到仓库外，并在 Windows 本地完成 bytes/SHA-256 验证。完整过程见 [Day 10 300M-token 正式预训练执行报告](reports/day-10-pretraining-report.md)。
+
+这些结果证明预训练 run 完整、连续且可恢复；它们不等于 test perplexity、文本生成质量或消融结论。上述任务留给后续阶段。
+
 ## 数据管线能力
 
 `scripts/build_fineweb_edu_corpus.py` 已实现：
@@ -471,7 +512,7 @@ python .\scripts\train_gpt.py `
 ## 当前配置
 
 - `configs/debug.yaml`：2,508,032 参数本地快速调试配置；
-- `configs/baseline.yaml`：33,833,984 参数租用 GPU 正式训练配置；Day 8 已冻结 RTX 5090 资源字段 `16 / 8 / 4 / false`；
+- `configs/baseline.yaml`：33,833,984 参数正式训练配置；Day 8 冻结的 RTX 5090 资源字段 `16 / 8 / 4 / false` 已用于 Day 10 正式 run；
 - `configs/data_fineweb_edu.yaml`：FineWeb-Edu 采集、清洗、划分和分片配置；
 - `configs/tokenizer.yaml`：ByteLevel BPE 训练、产物和评估配置；
 - `configs/tokenized_data.yaml`：冻结 Pilot 的 tokenized binary、索引、发布恢复和 Dataset 契约；
@@ -487,14 +528,14 @@ python .\scripts\check_config.py
 python -m pytest -q
 ```
 
-Day 9 source lifecycle 最终版本的本地完整测试结果：
+Day 10 文档收口的本地完整测试结果：
 
 ```text
-551 passed in 42.46s
+551 passed in 68.12s
 Exit code: 0
 ```
 
-同一最终提交在 AutoDL 上为 `551 passed, 2 warnings in 5.87s`。两个 warning 来自 Python 3.12 对多线程进程中 `fork()` 的弃用提示；DataLoader worker 释放已通过独立真实 Full 验证。Day 9 各功能提交均先通过定向测试和完整回归，`git diff --check` exit code 为 0。
+Day 10 没有修改训练源码或冻结配置；正式 run 使用 `07c22a4`。同一代码在 Day 9 的 AutoDL 最终回归为 `551 passed, 2 warnings in 5.87s`。两个 warning 来自 Python 3.12 对多线程进程中 `fork()` 的弃用提示；DataLoader worker 释放已通过独立真实 Full 验证。
 
 测试范围包括：
 
@@ -660,7 +701,7 @@ small-gpt/
 - [x] Day 7：实现训练循环、优化器、调度器、评估、日志与 checkpoint 恢复
 - [x] Day 8：资源定标、配置冻结、531 项回归与 Git 远端 hash 核对全部完成
 - [x] Day 9：构建并验证 350M Full、379.6M Tokenized Full 与单更新 smoke
-- [ ] 在租用 GPU 上完成正式预训练
+- [x] Day 10：完成 4,578 updates / 300,023,808 tokens 正式预训练与 checkpoint/metrics 归档
 - [ ] 实现文本生成与模型评估
 - [ ] 完成至少一个消融实验
 
@@ -684,13 +725,12 @@ small-gpt/
 - [Day 8 资源定标探针设计](reports/day-08-resource-calibration-design.md)
 - [Day 8 RTX 5090 资源定标执行报告](reports/day-08-resource-calibration-report.md)
 - [Day 9 Full 数据与单更新验收报告](reports/day-09-full-data-report.md)
+- [Day 10 300M-token 正式预训练执行报告](reports/day-10-pretraining-report.md)
 
 ## 当前阶段
 
-Day 9 的 Full 数据阶段已经结束。338,849 篇保留文档形成 350,000,812 provided tokens / 70 个 source shard groups；同一冻结 Tokenizer 编码出 379,587,945 model tokens / 77 个 storage shards。source manifest、tokenized manifest、跨 shard `T+1`、workers 2/4、memmap/worker 释放和 Git ignore 均已通过验证。
+Day 10 正式预训练已经结束。33,833,984 参数 Baseline 在真实 Tokenized Full manifest 上完成 4,578 updates / 300,023,808 model tokens；最终 train loss 为 `3.830253`，固定 validation loss/perplexity 为 `3.832705 / 46.187310`。学习率在 step 92 到达 `3e-4`，随后按 cosine 衰减到 `3e-5`。
 
-33,833,984 参数 Baseline 已在真实 Full manifest 上完成 BF16 dry-run 和恰好一次 optimizer update：step 1 / 65,536 tokens、loss 9.816444、0 evaluation、1 checkpoint。检查点内部 TrainerState、resolved config、Full/Tokenizer/source identity 和 CUDA RNG 均通过 CPU 严格加载验证。该 smoke 只证明训练入口可执行，不是质量实验。
+正式 run 的 4,578 个训练 step 连续，9 次 validation 严格位于 step 500～4,500，5 个 checkpoint 位于 step 1,000 / 2,000 / 3,000 / 4,000 / 4,578。final checkpoint 为 406,108,827 bytes，SHA-256 为 `a39f8378ebe4012afb992be451d355e814b856ffb5e690ac011758f9db614b51`，内部恢复状态全部通过。
 
-Day 9 技术提交截至 `23c63a6b81c6f44e6cb7dc1208395f1b84c4f407` 已普通 push 并与 `origin/main` 一致；本地和 AutoDL 最终完整回归均为 551 passed。63,808-byte 证据包 SHA-256 `0edd992562f64b1bdc156fd5bbb498f087b8de17097b974720b213075058e3a8` 已下载到仓库外，并通过 expected/actual/sidecar 三方 hash 与 66 个 archive entries 验证。
-
-后续 300M-token / 4,578-update 正式预训练是独立阶段，必须重新核对持久盘数据、Git、GPU、manifest/fingerprint，并获得新的明确费用与长跑授权。Day 9 没有启动正式预训练。
+301,228-byte 轻量证据包和 final checkpoint 已备份到仓库外；本地 SHA 与远端一致。D34 已在所有训练、验证、归档和下载完成后关机但未释放。下一阶段不是重复预训练，而是加载 final checkpoint，执行 test loss/perplexity、文本生成与采样检查，再开展至少一个消融实验。
