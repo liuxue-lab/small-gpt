@@ -28,6 +28,7 @@ from .config import (
 )
 from .data_stream import (
     DataStreamError,
+    EvaluationDataStream,
     OffsetSampler,
     TrainingDataStream,
     ValidationDataStream,
@@ -97,6 +98,7 @@ __all__ = [
     "CheckpointSaveError",
     "DataStreamError",
     "DeviceResolutionError",
+    "EvaluationDataStream",
     "EvaluationError",
     "EvaluationMetrics",
     "JsonlMetricLogger",

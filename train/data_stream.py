@@ -242,16 +242,25 @@ class TrainingDataStream(
         self.close()
 
 
-class ValidationDataStream:
-    """Repeatable non-overlapping validation windows in fixed split order."""
+_EVALUATION_SPLITS = ("validation", "test")
+
+
+class EvaluationDataStream:
+    """Repeatable non-overlapping windows from one explicit frozen split."""
 
     def __init__(
         self,
         manifest_path: str | Path,
         *,
+        split: str,
         plan: ResolvedTrainingPlan,
         verify_hashes: bool = False,
     ) -> None:
+        if split not in _EVALUATION_SPLITS:
+            raise DataStreamError(
+                "evaluation split must be one of "
+                f"{_EVALUATION_SPLITS}; got {split!r}"
+            )
         if not isinstance(plan, ResolvedTrainingPlan):
             raise TypeError(
                 "plan must be a ResolvedTrainingPlan, "
@@ -261,13 +270,14 @@ class ValidationDataStream:
             raise TypeError("verify_hashes must be a boolean")
 
         self.manifest_path = Path(manifest_path).resolve()
+        self.split = split
         self.plan = plan
         self._closed = False
         store: SplitTokenStore | None = None
         try:
             store = SplitTokenStore(
                 self.manifest_path,
-                "validation",
+                split,
                 verify_hashes=verify_hashes,
             )
             dataset = CausalWindowDataset(
@@ -277,7 +287,7 @@ class ValidationDataStream:
             )
             loader_generator = _loader_generator(
                 base_seed=plan.seed,
-                stream_name="validation",
+                stream_name=split,
             )
             loader = build_dataloader(
                 dataset,
@@ -297,6 +307,14 @@ class ValidationDataStream:
         self.dataset = dataset
         self.loader_generator = loader_generator
         self.loader: DataLoader[Any] = loader
+        self.total_windows = len(dataset)
+        self.total_evaluation_tokens = self.total_windows * plan.context_length
+        self.discarded_tokens = dataset.evaluation_remainder
+        if self.total_evaluation_tokens + self.discarded_tokens != len(store) - 1:
+            self.close()
+            raise DataStreamError(
+                f"{split} evaluation coverage does not conserve the token stream"
+            )
 
     @property
     def is_closed(self) -> bool:
@@ -307,7 +325,7 @@ class ValidationDataStream:
 
     def __iter__(self) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
         if self._closed:
-            raise DataStreamError("validation data stream is closed")
+            raise DataStreamError(f"{self.split} evaluation data stream is closed")
         return iter(self.loader)
 
     def close(self) -> None:
@@ -316,8 +334,29 @@ class ValidationDataStream:
         self.store.close()
         self._closed = True
 
-    def __enter__(self) -> ValidationDataStream:
+    def __enter__(self) -> EvaluationDataStream:
         return self
 
     def __exit__(self, _exc_type: Any, _exc: Any, _traceback: Any) -> None:
         self.close()
+
+
+class ValidationDataStream(EvaluationDataStream):
+    """Backward-compatible validation-only stream used during training."""
+
+    def __init__(
+        self,
+        manifest_path: str | Path,
+        *,
+        plan: ResolvedTrainingPlan,
+        verify_hashes: bool = False,
+    ) -> None:
+        super().__init__(
+            manifest_path,
+            split="validation",
+            plan=plan,
+            verify_hashes=verify_hashes,
+        )
+
+    def __enter__(self) -> ValidationDataStream:
+        return self

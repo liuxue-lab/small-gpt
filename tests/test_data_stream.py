@@ -14,6 +14,7 @@ from torch.utils.data import Dataset, SequentialSampler
 
 from train import (
     DataStreamError,
+    EvaluationDataStream,
     OffsetSampler,
     PrecisionPolicy,
     TrainerState,
@@ -322,6 +323,88 @@ def test_validation_stream_is_repeatable_sequential_and_keeps_tail_batch(tmp_pat
 
     assert validation.is_closed is True
     assert not any(shard.is_open for shard in validation.store.shards)
+
+
+@pytest.mark.parametrize(
+    ("split", "expected_starts", "expected_batches", "last_batch_size"),
+    (
+        ("validation", [0, 4, 8, 12, 16], 3, 1),
+        ("test", [0, 4], 1, 2),
+    ),
+)
+def test_evaluation_stream_is_explicit_repeatable_and_reports_full_coverage(
+    tmp_path,
+    split,
+    expected_starts,
+    expected_batches,
+    last_batch_size,
+):
+    manifest_path, streams = write_tokenized_fixture(tmp_path)
+    plan = stream_config().resolve()
+
+    with EvaluationDataStream(
+        manifest_path,
+        split=split,
+        plan=plan,
+    ) as evaluation:
+        first_pass = list(evaluation)
+        second_pass = list(evaluation)
+
+        assert evaluation.split == split
+        assert evaluation.store.split == split
+        assert evaluation.dataset.mode == "sequential"
+        assert [
+            evaluation.dataset.start_for_index(index)
+            for index in range(len(evaluation.dataset))
+        ] == expected_starts
+        assert evaluation.total_windows == len(expected_starts)
+        assert evaluation.total_evaluation_tokens == len(expected_starts) * 4
+        assert evaluation.discarded_tokens == (
+            len(streams[split]) - 1
+        ) % plan.context_length
+        assert (
+            evaluation.total_evaluation_tokens + evaluation.discarded_tokens
+            == len(streams[split]) - 1
+        )
+        assert len(evaluation) == expected_batches
+        assert first_pass[-1][0].shape == (last_batch_size, 4)
+        assert first_pass[0][0][0].tolist() == streams[split][0:4]
+        for first_batch, second_batch in zip(
+            first_pass,
+            second_pass,
+            strict=True,
+        ):
+            assert torch.equal(first_batch[0], second_batch[0])
+            assert torch.equal(first_batch[1], second_batch[1])
+
+    assert evaluation.is_closed is True
+    assert not any(shard.is_open for shard in evaluation.store.shards)
+
+
+@pytest.mark.parametrize("split", ("train", "Validation", "", None, True))
+def test_evaluation_stream_rejects_non_frozen_split(tmp_path, split):
+    manifest_path, _ = write_tokenized_fixture(tmp_path)
+
+    with pytest.raises(DataStreamError, match="evaluation split"):
+        EvaluationDataStream(
+            manifest_path,
+            split=split,
+            plan=stream_config().resolve(),
+        )
+
+
+def test_closed_test_evaluation_stream_cannot_be_reused(tmp_path):
+    manifest_path, _ = write_tokenized_fixture(tmp_path)
+    evaluation = EvaluationDataStream(
+        manifest_path,
+        split="test",
+        plan=stream_config().resolve(),
+    )
+
+    evaluation.close()
+
+    with pytest.raises(DataStreamError, match="test evaluation data stream is closed"):
+        iter(evaluation)
 
 
 def test_evaluation_does_not_change_the_next_training_batch(tmp_path):
