@@ -16,6 +16,8 @@ from eval import (
     GenerationSettings,
     generate_from_checkpoint,
     generate_token_ids,
+    generate_with_session,
+    load_generation_session,
     publish_generation_result,
     sha256_file,
 )
@@ -513,6 +515,51 @@ def test_checkpoint_generation_emits_strict_identity_and_raw_tokens(tmp_path):
     assert torch.equal(rng_before, torch.get_rng_state())
     assert torch.are_deterministic_algorithms_enabled() is deterministic_before
     json.dumps(result, allow_nan=False)
+
+
+def test_loaded_session_reuses_one_strict_artifact_load(tmp_path, monkeypatch):
+    fixture = write_generation_fixture(tmp_path)
+    session = load_generation_session(
+        fixture.checkpoint_path,
+        fixture.tokenizer_path,
+        model_config=fixture.model_config,
+        expected_run_id=RUN_ID,
+        expected_checkpoint_sha256=sha256_file(fixture.checkpoint_path),
+        expected_tokenizer_sha256=sha256_file(fixture.tokenizer_path),
+        precision=PrecisionPolicy.resolve("cpu", "fp32"),
+    )
+
+    def forbidden_reload(*args, **kwargs):
+        raise AssertionError("loaded generation session must not reload artifacts")
+
+    monkeypatch.setattr(
+        "eval.generation.load_model_checkpoint",
+        forbidden_reload,
+    )
+    settings = GenerationSettings(
+        strategy="sample",
+        max_new_tokens=2,
+        top_k=16,
+        seed=1337,
+    )
+    first = generate_with_session(
+        session,
+        "Hello",
+        settings=settings,
+        generator_source_commit="e" * 40,
+        generator_source_dirty=False,
+    )
+    second = generate_with_session(
+        session,
+        "Hello",
+        settings=settings,
+        generator_source_commit="e" * 40,
+        generator_source_dirty=False,
+    )
+
+    assert first["generation"]["token_ids"] == second["generation"]["token_ids"]
+    assert first["checkpoint"] == second["checkpoint"]
+    assert first["tokenizer"] == second["tokenizer"]
 
 
 def test_checkpoint_and_tokenizer_hashes_are_required_before_load(

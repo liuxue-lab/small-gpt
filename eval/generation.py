@@ -21,7 +21,7 @@ from torch import nn
 
 from model import GPT, GPTConfig
 from tokenizer import encode_text, load_tokenizer
-from train import PrecisionPolicy, load_model_checkpoint
+from train import LoadedCheckpoint, PrecisionPolicy, load_model_checkpoint
 
 from .frozen_evaluation import sha256_file
 
@@ -157,6 +157,22 @@ class GenerationTrace:
     @property
     def full_token_ids(self) -> tuple[int, ...]:
         return self.prompt_token_ids + self.generated_token_ids
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationSession:
+    """Strictly verified model and tokenizer artifacts loaded exactly once."""
+
+    model: GPT
+    tokenizer: tokenizers_library.Tokenizer
+    model_config: GPTConfig
+    precision: PrecisionPolicy
+    loaded_checkpoint: LoadedCheckpoint
+    checkpoint_path: Path
+    checkpoint_sha256: str
+    tokenizer_path: Path
+    tokenizer_sha256: str
+    tokenizer_contract: Mapping[str, Any]
 
 
 def _model_contract(model: nn.Module) -> tuple[int, int]:
@@ -493,38 +509,10 @@ def _resolved_path(path: str | Path) -> str:
     return Path(path).resolve().as_posix()
 
 
-def generate_from_checkpoint(
-    checkpoint_path: str | Path,
-    tokenizer_path: str | Path,
-    prompt: str,
-    *,
-    model_config: GPTConfig,
-    expected_run_id: str,
-    expected_checkpoint_sha256: str,
-    expected_tokenizer_sha256: str,
-    settings: GenerationSettings,
-    precision: PrecisionPolicy,
-    generator_source_commit: str | None = None,
-    generator_source_dirty: bool = True,
-) -> dict[str, Any]:
-    """Strictly load immutable artifacts and generate one auditable sample."""
-
-    if not isinstance(model_config, GPTConfig):
-        raise TypeError(
-            f"model_config must be GPTConfig, got {type(model_config)!r}"
-        )
-    if not isinstance(settings, GenerationSettings):
-        raise TypeError(
-            f"settings must be GenerationSettings, got {type(settings)!r}"
-        )
-    if not isinstance(precision, PrecisionPolicy):
-        raise TypeError(
-            f"precision must be PrecisionPolicy, got {type(precision)!r}"
-        )
-    if not isinstance(expected_run_id, str) or not expected_run_id.strip():
-        raise GenerationError("expected_run_id must be a non-empty string")
-    if not isinstance(prompt, str) or not prompt.strip():
-        raise GenerationError("prompt must be a non-empty, non-whitespace string")
+def _validate_generation_source(
+    generator_source_commit: str | None,
+    generator_source_dirty: bool,
+) -> None:
     if generator_source_commit is not None and (
         not isinstance(generator_source_commit, str)
         or _GIT_OBJECT_PATTERN.fullmatch(generator_source_commit) is None
@@ -535,7 +523,35 @@ def generate_from_checkpoint(
     if not isinstance(generator_source_dirty, bool):
         raise TypeError("generator_source_dirty must be a boolean")
 
-    settings.validate_for_vocab(model_config.vocab_size)
+
+def _validate_prompt(prompt: str) -> None:
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise GenerationError("prompt must be a non-empty, non-whitespace string")
+
+
+def load_generation_session(
+    checkpoint_path: str | Path,
+    tokenizer_path: str | Path,
+    *,
+    model_config: GPTConfig,
+    expected_run_id: str,
+    expected_checkpoint_sha256: str,
+    expected_tokenizer_sha256: str,
+    precision: PrecisionPolicy,
+) -> GenerationSession:
+    """Hash, validate, and load immutable generation artifacts once."""
+
+    if not isinstance(model_config, GPTConfig):
+        raise TypeError(
+            f"model_config must be GPTConfig, got {type(model_config)!r}"
+        )
+    if not isinstance(precision, PrecisionPolicy):
+        raise TypeError(
+            f"precision must be PrecisionPolicy, got {type(precision)!r}"
+        )
+    if not isinstance(expected_run_id, str) or not expected_run_id.strip():
+        raise GenerationError("expected_run_id must be a non-empty string")
+
     expected_checkpoint_hash = _normalized_sha256(
         expected_checkpoint_sha256,
         field="expected_checkpoint_sha256",
@@ -601,48 +617,90 @@ def generate_from_checkpoint(
             "model input/output embeddings are not tied after checkpoint load"
         )
 
+    return GenerationSession(
+        model=model,
+        tokenizer=tokenizer,
+        model_config=model_config,
+        precision=precision,
+        loaded_checkpoint=loaded,
+        checkpoint_path=resolved_checkpoint,
+        checkpoint_sha256=checkpoint_sha256,
+        tokenizer_path=resolved_tokenizer,
+        tokenizer_sha256=tokenizer_sha256,
+        tokenizer_contract=dict(tokenizer_contract),
+    )
+
+
+def generate_with_session(
+    session: GenerationSession,
+    prompt: str,
+    *,
+    settings: GenerationSettings,
+    generator_source_commit: str | None = None,
+    generator_source_dirty: bool = True,
+) -> dict[str, Any]:
+    """Generate one auditable sample from a strictly loaded session."""
+
+    if not isinstance(session, GenerationSession):
+        raise TypeError(
+            f"session must be GenerationSession, got {type(session)!r}"
+        )
+    if not isinstance(settings, GenerationSettings):
+        raise TypeError(
+            f"settings must be GenerationSettings, got {type(settings)!r}"
+        )
+    _validate_prompt(prompt)
+    _validate_generation_source(
+        generator_source_commit,
+        generator_source_dirty,
+    )
+    settings.validate_for_vocab(session.model_config.vocab_size)
+
     try:
-        prompt_token_ids = encode_text(tokenizer, prompt)
+        prompt_token_ids = encode_text(session.tokenizer, prompt)
     except Exception as error:
         raise GenerationError(f"could not tokenize prompt: {error}") from error
     if not prompt_token_ids:
         raise GenerationError("prompt produced no tokenizer IDs")
 
-    with _configured_generation_runtime(precision) as runtime:
+    with _configured_generation_runtime(session.precision) as runtime:
         trace = generate_token_ids(
-            model,
+            session.model,
             prompt_token_ids,
             settings=settings,
-            precision=precision,
+            precision=session.precision,
             eos_token_id=_SPECIAL_TOKEN_IDS["eos"],
         )
 
     try:
-        decoded_prompt = tokenizer.decode(
+        decoded_prompt = session.tokenizer.decode(
             list(trace.prompt_token_ids),
             skip_special_tokens=True,
         )
-        continuation_text = tokenizer.decode(
+        continuation_text = session.tokenizer.decode(
             list(trace.generated_token_ids),
             skip_special_tokens=True,
         )
-        full_text = tokenizer.decode(
+        full_text = session.tokenizer.decode(
             list(trace.full_token_ids),
             skip_special_tokens=True,
         )
     except Exception as error:
         raise GenerationError(f"could not decode generated IDs: {error}") from error
 
-    initial_conditioning = trace.prompt_token_ids[-model_config.context_length :]
+    loaded = session.loaded_checkpoint
+    initial_conditioning = trace.prompt_token_ids[
+        -session.model_config.context_length :
+    ]
     return {
         "format_name": GENERATION_FORMAT_NAME,
         "schema_version": GENERATION_SCHEMA_VERSION,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "run_id": loaded.state.run_id,
         "checkpoint": {
-            "path": _resolved_path(resolved_checkpoint),
+            "path": _resolved_path(session.checkpoint_path),
             "bytes": loaded.record.file_size,
-            "sha256": checkpoint_sha256,
+            "sha256": session.checkpoint_sha256,
             "global_step": loaded.record.global_step,
             "tokens_seen": loaded.record.tokens_seen,
             "identity": loaded.identity.to_dict(),
@@ -652,17 +710,17 @@ def generate_from_checkpoint(
             "source_dirty": generator_source_dirty,
         },
         "model": {
-            "config": model_config.to_dict(),
+            "config": session.model_config.to_dict(),
             "parameters": sum(
-                parameter.numel() for parameter in model.parameters()
+                parameter.numel() for parameter in session.model.parameters()
             ),
             "weight_tying_verified": True,
         },
         "tokenizer": {
-            "path": _resolved_path(resolved_tokenizer),
-            "bytes": resolved_tokenizer.stat().st_size,
-            "sha256": tokenizer_sha256,
-            **tokenizer_contract,
+            "path": _resolved_path(session.tokenizer_path),
+            "bytes": session.tokenizer_path.stat().st_size,
+            "sha256": session.tokenizer_sha256,
+            **dict(session.tokenizer_contract),
         },
         "protocol": {
             **settings.to_dict(),
@@ -699,6 +757,61 @@ def generate_from_checkpoint(
         },
         "runtime": runtime,
     }
+
+
+def generate_from_checkpoint(
+    checkpoint_path: str | Path,
+    tokenizer_path: str | Path,
+    prompt: str,
+    *,
+    model_config: GPTConfig,
+    expected_run_id: str,
+    expected_checkpoint_sha256: str,
+    expected_tokenizer_sha256: str,
+    settings: GenerationSettings,
+    precision: PrecisionPolicy,
+    generator_source_commit: str | None = None,
+    generator_source_dirty: bool = True,
+) -> dict[str, Any]:
+    """Strictly load immutable artifacts and generate one auditable sample."""
+
+    if not isinstance(model_config, GPTConfig):
+        raise TypeError(
+            f"model_config must be GPTConfig, got {type(model_config)!r}"
+        )
+    if not isinstance(settings, GenerationSettings):
+        raise TypeError(
+            f"settings must be GenerationSettings, got {type(settings)!r}"
+        )
+    if not isinstance(precision, PrecisionPolicy):
+        raise TypeError(
+            f"precision must be PrecisionPolicy, got {type(precision)!r}"
+        )
+    if not isinstance(expected_run_id, str) or not expected_run_id.strip():
+        raise GenerationError("expected_run_id must be a non-empty string")
+    _validate_prompt(prompt)
+    _validate_generation_source(
+        generator_source_commit,
+        generator_source_dirty,
+    )
+    settings.validate_for_vocab(model_config.vocab_size)
+
+    session = load_generation_session(
+        checkpoint_path,
+        tokenizer_path,
+        model_config=model_config,
+        expected_run_id=expected_run_id,
+        expected_checkpoint_sha256=expected_checkpoint_sha256,
+        expected_tokenizer_sha256=expected_tokenizer_sha256,
+        precision=precision,
+    )
+    return generate_with_session(
+        session,
+        prompt,
+        settings=settings,
+        generator_source_commit=generator_source_commit,
+        generator_source_dirty=generator_source_dirty,
+    )
 
 
 def publish_generation_result(
