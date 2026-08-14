@@ -8,8 +8,8 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 当前阶段 | Day 10 的 300M-token 正式预训练已完成；下一阶段为加载正式权重、生成、test 评估与消融 |
-| 自动测试 | Day 10 文档收口本地 `551 passed in 68.12s`；训练源码仍为 Day 9 冻结提交 `07c22a4` |
+| 当前阶段 | Day 11 的 final checkpoint 只读加载、frozen validation/test 与固定生成协议已完成；下一阶段为单变量消融 |
+| 自动测试 | Day 11 最终功能提交 `b8f8fc8`：`628 passed in 18.73s` |
 | 数据集 | `HuggingFaceFW/fineweb-edu` / `sample-10BT` |
 | 数据访问方式 | 固定 revision、14 个显式 Parquet 源文件、经过 bytes/SHA 验证的可恢复本地 cache |
 | 数据管线 | 支持清洗、去重、划分、分片、恢复与完整性校验 |
@@ -30,6 +30,9 @@
 | Tokenized Full | 379,587,945 model tokens、77 个 storage shards、759,175,890 payload bytes |
 | Day 9 Full 单更新 | BF16 step 1 / 65,536 tokens；loss 9.816444；0 evaluation；1 个严格 checkpoint |
 | Day 10 正式预训练 | BF16 4,578 updates / 300,023,808 tokens；final train loss 3.830253；validation loss 3.832705 / perplexity 46.187310 |
+| Day 11 Frozen validation | 完整 457 batches / 3,741,184 tokens；loss 3.819582 / perplexity 45.585164 |
+| Day 11 Frozen test | 完整 430 batches / 3,517,952 tokens；loss 3.830240 / perplexity 46.073601 |
+| Day 11 文本生成 | 6 prompts × 5 decoding strategies = 30 samples；固定协议、token IDs 与 JSONL 证据已归档 |
 | Git 分支 | `main` |
 
 > FineWeb-Edu 的 `provided_token_count` 使用上游 Tokenizer 口径，只用于语料采集预算。当前项目 BPE 在全 Pilot 上产生 2,129,776 个模型 token，比 2,000,083 个 provided tokens 高约 6.48%。后续训练预算以项目 Tokenizer 的实际 token 数为准。
@@ -350,6 +353,51 @@ CPU 严格加载已验证 model、AdamW、scheduler、TrainerState、Python/NumP
 
 这些结果证明预训练 run 完整、连续且可恢复；它们不等于 test perplexity、文本生成质量或消融结论。上述任务留给后续阶段。
 
+## Day 11 Frozen Evaluation 与文本生成结果
+
+Day 11 没有继续训练或修改 final checkpoint。它从 Day 10 的冻结权重出发，新增 strict model-only loader、显式 frozen split 评估流、正式评估 CLI、单样本生成 CLI 和固定生成套件。五个功能提交依次为：
+
+| Commit | 内容 |
+| --- | --- |
+| `6ac89df` | model-only checkpoint loading |
+| `fd23482` | frozen validation/test streams |
+| `863a721` | frozen checkpoint evaluation |
+| `9cb3208` | reproducible text generation |
+| `b8f8fc8` | frozen generation suite |
+
+最终 checkpoint 身份保持不变：
+
+```text
+RunID = baseline-full-300m-20260813-232952
+Bytes = 406108827
+SHA256 = a39f8378ebe4012afb992be451d355e814b856ffb5e690ac011758f9db614b51
+Training source commit = 07c22a42a696e4d2bab7e6396fcb4c417dc5f63e
+Evaluation/generation source commit = b8f8fc854b76e5b73c091343a2234ad8521f8005
+```
+
+完整 frozen evaluation 在 AutoDL A69 的 NVIDIA GeForce RTX 5090 上，以 CUDA BF16、batch size 16、context length 512 和 sequential non-overlapping windows 执行。没有设置 `max_batches`：
+
+| Split | Split model tokens | Windows | Batches | Evaluated tokens | Discarded tail | Loss | Perplexity |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Validation | 3,741,345 | 7,307 | 457 | 3,741,184 | 160 | 3.819582318483 | 45.585164263392 |
+| Test | 3,518,409 | 6,871 | 430 | 3,517,952 | 456 | 3.830240146369 | 46.073601313835 |
+
+评估前后 checkpoint、Tokenizer、tokenized manifest、156 个 tokenized files 的聚合 SHA、Git HEAD 和 clean worktree 保持一致。评估证据包为 22,200 bytes，SHA-256 为 `53ab948d13b2abbdac1e9bd5610c2b226743761a591701c65f4e23cdf2b62755`，已从 A69 下载并在 Windows 与独立复核环境中通过 CRC、内部文件哈希和只读状态验证。
+
+生成协议 `day11-baseline-generation-v1` 固定了 6 个 prompts、64 个最大新 token 和 5 种解码：
+
+| Decoding | 参数 |
+| --- | --- |
+| Greedy | 无 seed |
+| Pure sample | temperature=1.0，seed=1337 |
+| Lower temperature | temperature=0.7，seed=1337 |
+| Top-k | temperature=1.0，top-k=50，seed=1337 |
+| Top-p | temperature=1.0，top-p=0.9，seed=1337 |
+
+正式套件在本地 NVIDIA GeForce RTX 5060 Laptop GPU 上使用 CUDA FP32，模型和 Tokenizer 只加载一次。30/30 samples 全部发布，共生成 1,920 tokens；没有 context crop，30 个样本均由 `max_new_tokens` 停止，没有生成 EOS。生成证据 archive 为 11,777 bytes，SHA-256 为 `f1063bfcf048d5ffa8085be188203f3ed5638d1d31658e4d5962adf35214befa`。
+
+人工检查显示，greedy 输出存在明显重复循环；随机采样提高了词汇和句式多样性，但仍有主题漂移、事实拼接和语义不连贯。这证明 checkpoint-to-text 工程链路已经成立，不证明 34M、300M-token 的基础模型已经具备聊天助手质量。完整证据、实现边界和样例分析见 [Day 11 Frozen Evaluation 与文本生成执行报告](reports/day-11-evaluation-generation-report.md)。
+
 ## 数据管线能力
 
 `scripts/build_fineweb_edu_corpus.py` 已实现：
@@ -495,6 +543,59 @@ python .\scripts\train_gpt.py `
 
 运行指标写入 `runs/<run-id>/metrics.jsonl`，checkpoint 写入 `checkpoints/<run-id>/`。两类运行产物均由 Git 忽略。
 
+## Frozen Evaluation 与文本生成入口
+
+评估一个显式 frozen split：
+
+```powershell
+python scripts/evaluate_checkpoint.py `
+  --config configs/baseline.yaml `
+  --checkpoint <STEP_00004578_PATH> `
+  --checkpoint-sha256 a39f8378ebe4012afb992be451d355e814b856ffb5e690ac011758f9db614b51 `
+  --manifest <TOKENIZED_FULL_MANIFEST_PATH> `
+  --run-id baseline-full-300m-20260813-232952 `
+  --split validation `
+  --device cuda `
+  --precision bf16 `
+  --output <NEW_VALIDATION_JSON_PATH>
+```
+
+`--split` 只允许 `validation` 或 `test`。省略 `--max-batches` 才表示请求完整 split；工具会报告实际 batches、tokens、尾部丢弃 token 数以及是否确实覆盖完整 split。输出使用 strict JSON 原子发布，拒绝覆盖既有文件。
+
+运行一个可审计续写：
+
+```powershell
+python scripts/generate_text.py `
+  --checkpoint <STEP_00004578_PATH> `
+  --checkpoint-sha256 a39f8378ebe4012afb992be451d355e814b856ffb5e690ac011758f9db614b51 `
+  --tokenizer tokenizer/artifacts/tokenizer.json `
+  --tokenizer-sha256 b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5 `
+  --run-id baseline-full-300m-20260813-232952 `
+  --prompt "Once upon a time" `
+  --strategy greedy `
+  --max-new-tokens 64 `
+  --device cuda `
+  --precision fp32 `
+  --output <NEW_GENERATION_JSON_PATH>
+```
+
+执行仓库内冻结的完整生成协议：
+
+```powershell
+python scripts/run_generation_suite.py `
+  --protocol configs/day11_generation_protocol.json `
+  --checkpoint <STEP_00004578_PATH> `
+  --checkpoint-sha256 a39f8378ebe4012afb992be451d355e814b856ffb5e690ac011758f9db614b51 `
+  --tokenizer tokenizer/artifacts/tokenizer.json `
+  --tokenizer-sha256 b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5 `
+  --run-id baseline-full-300m-20260813-232952 `
+  --device cuda `
+  --precision fp32 `
+  --output-dir <NEW_GENERATION_SUITE_DIRECTORY>
+```
+
+三个入口都要求显式 artifact SHA 和 run ID。生成使用独立的 `torch.Generator`，不会推进全局 Torch RNG；greedy 禁止 seed/top-k/top-p，sample 必须提供 seed。协议输出保留 prompt/generated/full token IDs、解码文本、停止原因、运行时和 artifact identity。
+
 ## 开发与训练分工
 
 | 本地 Windows 电脑 | 租用的 Linux GPU |
@@ -517,6 +618,7 @@ python .\scripts\train_gpt.py `
 - `configs/tokenizer.yaml`：ByteLevel BPE 训练、产物和评估配置；
 - `configs/tokenized_data.yaml`：冻结 Pilot 的 tokenized binary、索引、发布恢复和 Dataset 契约；
 - `configs/tokenized_data_full.yaml`：与 Full source manifest 身份绑定的正式编码配置。
+- `configs/day11_generation_protocol.json`：Day 11 固定 prompts、seed、64-token 上限和五种解码角色。
 
 ## 本地验证
 
@@ -571,6 +673,11 @@ Day 10 没有修改训练源码或冻结配置；正式 run 使用 `07c22a4`。�
 - source stream 的成功、异常和 non-closeable 生命周期；
 - Full token conservation、原子发布、完成态验证与 CLI profile；
 - tokenizer metadata 跨平台 LF/CRLF-only 身份 fallback。
+- model-only checkpoint preflight、strict state restore 与 RNG/optimizer 隔离；
+- 显式 validation/test frozen stream、完整覆盖和 tail batch；
+- frozen evaluation identity、有限指标、原子发布与拒绝覆盖；
+- greedy/sample、temperature、top-k、top-p、独立 RNG、EOS 与 context crop；
+- generation protocol schema/fingerprint、单次 artifact load、ordered JSONL 与失败不发布。
 
 ## 项目结构
 
@@ -582,14 +689,19 @@ small-gpt/
 │   ├── debug.yaml
 │   ├── tokenizer.yaml
 │   ├── tokenized_data.yaml
-│   └── tokenized_data_full.yaml
+│   ├── tokenized_data_full.yaml
+│   └── day11_generation_protocol.json
 ├── data/                          # 本地生成数据，不提交到 Git
 ├── data_pipeline/
 │   ├── __init__.py
 │   ├── binary_format.py
 │   ├── dataset.py
 │   └── tokenization.py
-├── eval/                          # 验证损失与文本生成
+├── eval/
+│   ├── __init__.py
+│   ├── frozen_evaluation.py       # 显式 frozen split 评估与 strict JSON 证据
+│   ├── generation.py              # greedy/sample、过滤、EOS/context 与单样本证据
+│   └── generation_suite.py        # 固定 prompt/decoding 协议与 JSONL bundle
 ├── model/
 │   ├── __init__.py
 │   ├── attention.py               # 手写 causal multi-head self-attention
@@ -615,7 +727,9 @@ small-gpt/
 │   ├── day-07-training-system-design.md
 │   ├── day-08-resource-calibration-design.md
 │   ├── day-08-resource-calibration-report.md
-│   └── day-09-full-data-report.md
+│   ├── day-09-full-data-report.md
+│   ├── day-10-pretraining-report.md
+│   └── day-11-evaluation-generation-report.md
 ├── scripts/
 │   ├── build_fineweb_edu_corpus.py
 │   ├── check_checkpoint_resume.py
@@ -625,12 +739,15 @@ small-gpt/
 │   ├── check_training_core.py
 │   ├── check_training_pipeline.py
 │   ├── check_training_update.py
+│   ├── evaluate_checkpoint.py
 │   ├── evaluate_tokenizer.py
+│   ├── generate_text.py
 │   ├── inspect_dataset.py
 │   ├── inspect_model.py
 │   ├── inspect_tokenized_data.py
 │   ├── prepare_data.py
 │   ├── probe_baseline_resources.py
+│   ├── run_generation_suite.py
 │   ├── tokenize_corpus.py
 │   ├── train_gpt.py
 │   └── train_tokenizer.py
@@ -645,8 +762,11 @@ small-gpt/
 │   ├── test_dataset.py
 │   ├── test_environment.py
 │   ├── test_evaluation.py
+│   ├── test_frozen_evaluation.py
 │   ├── test_full_source_stream_lifecycle.py
 │   ├── test_layers.py
+│   ├── test_generation.py
+│   ├── test_generation_suite.py
 │   ├── test_model.py
 │   ├── test_model_config.py
 │   ├── test_optimizer.py
@@ -702,7 +822,7 @@ small-gpt/
 - [x] Day 8：资源定标、配置冻结、531 项回归与 Git 远端 hash 核对全部完成
 - [x] Day 9：构建并验证 350M Full、379.6M Tokenized Full 与单更新 smoke
 - [x] Day 10：完成 4,578 updates / 300,023,808 tokens 正式预训练与 checkpoint/metrics 归档
-- [ ] 实现文本生成与模型评估
+- [x] Day 11：完成 strict checkpoint 推理加载、完整 frozen validation/test 与固定生成协议
 - [ ] 完成至少一个消融实验
 
 ## 文档
@@ -726,11 +846,12 @@ small-gpt/
 - [Day 8 RTX 5090 资源定标执行报告](reports/day-08-resource-calibration-report.md)
 - [Day 9 Full 数据与单更新验收报告](reports/day-09-full-data-report.md)
 - [Day 10 300M-token 正式预训练执行报告](reports/day-10-pretraining-report.md)
+- [Day 11 Frozen Evaluation 与文本生成执行报告](reports/day-11-evaluation-generation-report.md)
 
 ## 当前阶段
 
-Day 10 正式预训练已经结束。33,833,984 参数 Baseline 在真实 Tokenized Full manifest 上完成 4,578 updates / 300,023,808 model tokens；最终 train loss 为 `3.830253`，固定 validation loss/perplexity 为 `3.832705 / 46.187310`。学习率在 step 92 到达 `3e-4`，随后按 cosine 衰减到 `3e-5`。
+Day 11 已经完成。Day 10 final checkpoint 通过 model-only strict loader 被只读加载；完整 frozen validation 为 `loss=3.819582 / perplexity=45.585164`，完整 frozen test 为 `loss=3.830240 / perplexity=46.073601`。两者都绑定同一 checkpoint、Tokenizer、Tokenized Full manifest 和评估源码身份。
 
-正式 run 的 4,578 个训练 step 连续，9 次 validation 严格位于 step 500～4,500，5 个 checkpoint 位于 step 1,000 / 2,000 / 3,000 / 4,000 / 4,578。final checkpoint 为 406,108,827 bytes，SHA-256 为 `a39f8378ebe4012afb992be451d355e814b856ffb5e690ac011758f9db614b51`，内部恢复状态全部通过。
+固定生成协议完成 6 prompts × 5 decodings 共 30 samples，保留全部 token IDs、参数、seed、运行时、停止原因和文本。结果显示工程链路可用，但 greedy 重复和随机采样语义漂移仍明显，模型质量边界必须如实保留。
 
-301,228-byte 轻量证据包和 final checkpoint 已备份到仓库外；本地 SHA 与远端一致。D34 已在所有训练、验证、归档和下载完成后关机但未释放。下一阶段不是重复预训练，而是加载 final checkpoint，执行 test loss/perplexity、文本生成与采样检查，再开展至少一个消融实验。
+两份正式证据均在仓库外保存并完成下载复核。A69 在数据/权重/证据保全、临时文件清理以及 GPU/后台进程归零后已经关机但未释放；D34 也未释放。下一阶段是设计一次只改变单一变量、预算和评估协议可比较的消融实验，而不是继续调采样参数来替代消融。

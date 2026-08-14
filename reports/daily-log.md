@@ -2345,3 +2345,499 @@ D:\model-backups\small-gpt\day10\baseline-full-300m-20260813-232952
 5. 保留原始 checkpoint，不在评估时覆盖；
 6. 选择至少一个可解释消融实验；
 7. 所有大权重和生成产物继续放在 Git 之外。
+
+## Day 11：Frozen Evaluation、可复现生成与证据闭环
+
+日期：2026-08-14
+
+### 今日目标
+
+- 从 Day 10 final checkpoint 只读恢复模型权重；
+- 不恢复或推进 optimizer、scheduler 和 RNG；
+- 为 validation/test 建立显式、可重复、无重叠的 frozen stream；
+- 分别完成完整 validation 和完整 test 的 loss/perplexity；
+- 实现 greedy、temperature、top-k 和 top-p 文本生成；
+- 冻结 prompts、seed、解码参数和输出 schema；
+- 保存并下载 evaluation/generation 证据；
+- 保持 checkpoint、Tokenizer、Full 数据和 Git 身份不变；
+- 完成自动测试、独立证据复核、云端清理和关机。
+
+### 执行边界
+
+Day 11 没有：
+
+- 继续或恢复 300M-token 正式训练；
+- 写回或覆盖 final checkpoint；
+- 重建 Full 或 Tokenized Full；
+- 重训 Tokenizer；
+- 修改 Baseline 模型架构；
+- 把 training-time 100-batch validation 当作 frozen full validation；
+- 把生成样例当作模型质量已经达标的证明；
+- 开展正式消融；
+- 释放 A69 或 D34。
+
+正式 run 和 artifact identity：
+
+```text
+RunID=baseline-full-300m-20260813-232952
+CheckpointBytes=406108827
+CheckpointSHA256=a39f8378ebe4012afb992be451d355e814b856ffb5e690ac011758f9db614b51
+CheckpointTrainingSource=07c22a42a696e4d2bab7e6396fcb4c417dc5f63e
+TokenizerSHA256=b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5
+TokenizedManifestSHA256=ce7cd91075c7c666c427e1aaa286096a7f386643f3a76de3c26ef770d6cce67e
+DatasetFingerprint=39dab5bacdf8719bbc849e85ddcd7422cba5777fc044b437d050a49b87ab174f
+```
+
+### 功能提交
+
+Day 11 从 Day 10 文档终点 `27a5ef0` 开始，形成五个独立功能提交：
+
+| Commit | Subject | 主要文件 |
+| --- | --- | --- |
+| `6ac89df` | `feat: add model-only checkpoint loading` | `train/checkpoint.py`、checkpoint tests |
+| `fd23482` | `feat: add frozen split evaluation streams` | `train/data_stream.py`、stream tests |
+| `863a721` | `feat: add frozen checkpoint evaluation` | `eval/frozen_evaluation.py`、evaluation CLI/tests |
+| `9cb3208` | `feat: add reproducible text generation` | `eval/generation.py`、generation CLI/tests |
+| `b8f8fc8` | `feat: add frozen generation suite` | protocol、suite runner、suite tests |
+
+每个提交都经过定向测试、完整回归、精确暂存、parent/subject/file-scope 检查、pre-push gate 和 GitHub 三方 SHA 闭环。
+
+### Model-only checkpoint loader
+
+新增 `load_model_checkpoint`，只恢复模型权重，但仍严格检查：
+
+- checkpoint root fields 和 schema；
+- checkpoint 内部 model config 与 identity hash；
+- active model config；
+- resolved training config 和计划守恒；
+- run ID、global step、tokens seen 和 save boundary；
+- state dict keys、shape、dtype；
+- 所有浮点/复数权重有限；
+- strict `load_state_dict`。
+
+loader 不加载 optimizer、scheduler 或 scaler，不恢复 Python/NumPy/Torch RNG，也不会因为 checkpoint 里的这些训练态 payload 改变推理进程。所有可能发现的兼容性错误都在参数复制前拒绝。
+
+定向测试：
+
+```text
+28 passed in 6.13s
+Day11StageD1TargetedGate=PASS
+```
+
+阶段完整回归：
+
+```text
+559 passed in 16.40s
+Day11StageD1FullRegression=PASS
+```
+
+### Frozen split streams
+
+新增显式 evaluation stream：
+
+- split 只允许 `validation` 或 `test`；
+- sequential non-overlapping windows；
+- split 内按固定顺序遍历；
+- 保留最后一个不足完整 batch 的 tail batch；
+- 报告完整 windows、tokens 和 discarded remainder；
+- evaluation stream 关闭后不能复用；
+- 不推进训练 stream；
+- 不改变全局 Torch RNG；
+- store 在正常和异常路径都关闭。
+
+定向测试：
+
+```text
+43 passed in 3.32s
+Day11StageD2TargetedGate=PASS
+```
+
+阶段完整回归：
+
+```text
+567 passed in 16.18s
+Day11StageD2FullRegression=PASS
+```
+
+### Frozen evaluation CLI
+
+新增 `scripts/evaluate_checkpoint.py`。调用者必须显式提供：
+
+- checkpoint path 和 SHA-256；
+- Tokenized Full manifest；
+- run ID；
+- `validation` 或 `test`；
+- device/precision；
+- 新的 output path。
+
+核心执行顺序：
+
+1. 检查 split、run ID 和 `max_batches`；
+2. 在加载前计算并比对 checkpoint SHA；
+3. model-only strict load；
+4. 验证 active manifest identity 与 checkpoint identity；
+5. 验证 tied embedding/head；
+6. 建立 explicit frozen stream；
+7. 运行 token-weighted loss；
+8. 验证 batches/tokens 与 stream 计划一致；
+9. 生成 strict JSON；
+10. 原子发布并拒绝覆盖已有输出。
+
+设置 `max_batches` 的有界评估永远不会被标记为 full split。
+
+定向测试：
+
+```text
+84 passed in 7.92s
+Day11StageD3TargetedGate=PASS
+```
+
+阶段完整回归：
+
+```text
+580 passed in 16.15s
+Day11StageD3FullRegression=PASS
+```
+
+### 单样本文本生成
+
+新增 `scripts/generate_text.py` 和生成核心：
+
+- `greedy` 与 `sample` 两种 strategy；
+- temperature；
+- top-k；
+- top-p；
+- sample 强制显式 seed；
+- greedy 禁止 seed/top-k/top-p；
+- 独立 device-local `torch.Generator`；
+- 不推进全局 Torch RNG；
+- `torch.inference_mode()`；
+- EOS 停止；
+- 超过 512-token context 时只 left-crop conditioning window；
+- trace 仍保存完整 prompt/generated token IDs；
+- 记录 context crop、forward passes 和 elapsed time；
+- strict checkpoint/Tokenizer hash；
+- 16K vocab 和四个 special token ID 验证；
+- weight tying 验证；
+- strict JSON 原子发布且拒绝覆盖。
+
+定向测试：
+
+```text
+23 passed in 3.11s
+Day11StageD4TargetedGate=PASS
+```
+
+阶段完整回归：
+
+```text
+603 passed in 17.24s
+Day11StageD4FullRegression=PASS
+```
+
+本地 RTX 5060 对真实 final checkpoint 的单-token greedy smoke：
+
+```text
+Strategy=greedy
+PromptTokens=6
+GeneratedTokens=1
+StopReason=max_new_tokens
+Continuation=' not'
+ContextCropEvents=0
+RuntimeDevice=cuda:0
+Day11StageD4RealCheckpointSmoke=PASS
+```
+
+### Frozen generation suite
+
+仓库新增 `configs/day11_generation_protocol.json`。协议身份：
+
+```text
+ProtocolID=day11-baseline-generation-v1
+ProtocolPrompts=6
+ProtocolDecodings=5
+ProtocolSamples=30
+ProtocolFingerprint=e60f3fb381b3efd8f00bd3f3fc3071c11645c78977dc7c6c40e0fd124b6d1ed0
+```
+
+固定 prompts：
+
+| ID | Prompt |
+| --- | --- |
+| story | `Once upon a time` |
+| science | `The experiment showed that` |
+| technology | `The future of artificial intelligence is` |
+| history | `During the nineteenth century,` |
+| explanation | `The main reason this happens is` |
+| instruction | `To make a cup of tea,` |
+
+固定 decoding roles：
+
+| ID | Strategy | Temperature | Top-k | Top-p | Seed |
+| --- | --- | ---: | ---: | ---: | ---: |
+| greedy | greedy | 1.0 | null | null | null |
+| sample-temperature-1 | sample | 1.0 | null | null | 1337 |
+| sample-temperature-0-7 | sample | 0.7 | null | null | 1337 |
+| sample-top-k-50 | sample | 1.0 | 50 | null | 1337 |
+| sample-top-p-0-9 | sample | 1.0 | null | 0.9 | 1337 |
+
+所有样本固定 `max_new_tokens=64`，顺序为 prompt_then_decoding。协议 parser 拒绝 duplicate JSON key、未知字段、重复 prompt/ID、缺失 role、错误 seed 和混合过滤参数。suite 只加载一次 checkpoint/model/Tokenizer，先在 staging 目录生成完整 manifest + ordered JSONL，失败时不发布部分结果，并拒绝复用既有 output directory。
+
+定向测试：
+
+```text
+48 passed in 3.89s
+Day11StageD5TargetedGate=PASS
+```
+
+最终功能回归：
+
+```text
+628 passed in 18.73s
+Day11StageD5FullRegression=PASS
+```
+
+### 正式生成结果
+
+运行环境：
+
+| 项目 | 结果 |
+| --- | --- |
+| GPU | NVIDIA GeForce RTX 5060 Laptop GPU |
+| Device | `cuda:0` |
+| Precision | FP32 |
+| PyTorch | 2.11.0+cu128 |
+| Deterministic algorithms | true |
+| TF32 | false |
+| cuDNN benchmark | false |
+| Model loads | 1 |
+
+汇总：
+
+```text
+CompletedSamples=30
+GeneratedTokens=1920
+ForwardPasses=1920
+ContextCropEvents=0
+EOSStops=0
+MaxTokenStops=30
+WallElapsedSeconds=12.773515
+SummedGenerationSeconds=10.141866
+```
+
+生成文件：
+
+| 文件 | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `manifest.json` | 5,280 | `bd496565a4e669192bd660b9fc9cf546265b8a31419fd75cdab99858e5023953` |
+| `samples.jsonl` | 82,452 | `59decb14aff48fc52a6ee67247d8c15f9ad3a83066afc010eb5b957a9d1bc8cd` |
+
+证据 archive：
+
+```text
+File=small-gpt-day11-generation-evidence-b8f8fc8-20260814-050240601.zip
+Bytes=11777
+SHA256=f1063bfcf048d5ffa8085be188203f3ed5638d1d31658e4d5962adf35214befa
+Entries=manifest.json,samples.jsonl
+Validation=PASS
+```
+
+### 生成质量观察
+
+所有 30 个样本都成功生成，但 30/30 没有 EOS，均运行到 64-token 上限。
+
+人工检查的主要观察：
+
+- 6 个 greedy continuation 都出现明显的短语或句式循环；
+- science greedy 重复 `the first time`；
+- technology greedy 重复 `not a matter of fact`；
+- history greedy 重复 `the first settlers`；
+- explanation greedy 重复 `The water is not water`；
+- instruction greedy 重复 `make a cup of tea`；
+- stochastic sampling 通常比 greedy 有更多词汇和句式变化；
+- sampling 仍频繁出现主题漂移、虚构专名、事实拼接和语义不连贯；
+- top-k/top-p 不能稳定解决 34M Baseline 的知识与连贯性限制。
+
+因此，正确结论是：
+
+> Day 11 证明了 strict checkpoint-to-text、固定协议和证据系统可用；当前生成质量符合小模型、有限训练预算、无指令微调的基础模型边界，不应描述为聊天助手质量已经达标。
+
+### A69 Frozen validation/test
+
+D34 当时没有可用克隆槽位，因此用户授权在 A69 上完成只读评估。A69 身份：
+
+```text
+Instance=A69
+Hostname=autodl-container-qcjwby1mc9-8befeb6c
+GPU=NVIDIA GeForce RTX 5090
+Python=3.12.3
+PyTorch=2.12.1+cu130
+CUDA=13.0
+BF16Supported=True
+```
+
+A69 克隆最初位于 checkpoint 的训练源码 `07c22a4`，其 `origin/main` 因 GitHub 网络不可用仍停在已知祖先 `23c63a6`。这不是数据丢失。离线检查确认：
+
+- clean worktree；
+- checkpoint/source identity 与训练时一致；
+- Tokenized Full 可完整只读扫描；
+- 156 个 tokenized files 保持一致；
+- checkpoint、Tokenizer、source/tokenized manifests SHA 全部正确；
+- GPU compute processes 为 0。
+
+GitHub HTTPS/HTTP2 和 HTTP/1.1 查询均失败后，没有降低 identity 门。改为在本地生成完整 Git bundle：
+
+```text
+BundleHead=b8f8fc854b76e5b73c091343a2234ad8521f8005 refs/heads/main
+BundleBytes=772317
+BundleSHA256=aa3636c0aa0199b24a105460a98e07375babe95837eea71cb5870847c238605c
+BundleCompleteHistory=True
+```
+
+A69 验证 bundle 后，以 `git merge --ff-only` 从 `07c22a4` 精确前进到 `b8f8fc8`。checkpoint、Tokenizer、Full data、manifests 和 worktree 在前后完全不变。
+
+完整 evaluation 参数：
+
+| 项目 | 值 |
+| --- | --- |
+| Device / precision | `cuda:0` / BF16 |
+| Batch size | 16 |
+| Context length | 512 |
+| Window mode | sequential non-overlapping |
+| `max_batches` | null |
+| Split order | validation → test |
+
+结果：
+
+| Split | Windows | Batches | Evaluated tokens | Tail discarded | Loss | Perplexity |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Validation | 7,307 | 457 | 3,741,184 | 160 | 3.819582318483 | 45.585164263392 |
+| Test | 6,871 | 430 | 3,517,952 | 456 | 3.830240146369 | 46.073601313835 |
+
+这里的 frozen full validation 与 Day 10 training-time validation 不同：
+
+- Day 10 每次只取 100 batches / 819,200 tokens；
+- Day 11 validation 覆盖 457 batches / 3,741,184 tokens；
+- Day 11 test 是此前从未用于调参或报告的新 split；
+- 两个 full split 都没有 `max_batches` 截断。
+
+### Evaluation 证据
+
+云端证据目录包含：
+
+```text
+evidence-manifest.json
+preflight.json
+validation.json
+validation.log
+test.json
+test.log
+postflight.json
+```
+
+archive：
+
+```text
+File=frozen-evaluation-20260814T115751028276821Z.zip
+Bytes=22200
+SHA256=53ab948d13b2abbdac1e9bd5610c2b226743761a591701c65f4e23cdf2b62755
+Entries=7
+EvidenceManifestSHA256=e660b3f857e7501a6d000ecd0973d036cea752bc222a0db29083c4456c9f6363
+```
+
+下载后完成三层复核：
+
+1. Windows 验证 bytes、archive SHA、7 entries、可读 bytes 和 manifest；
+2. manifest 内六个 payload 的 bytes/SHA 与 archive 实际内容逐项一致；
+3. 独立只读复核验证 ZIP path safety、无重复/加密/symlink、CRC、pre/post identity、metrics 算术和 log 语义。
+
+最终：
+
+```text
+ArchiveSafety=PASS
+ArchiveCRC=PASS
+ManifestInventoryHashes=PASS
+PrePostReadOnlyIdentity=PASS
+ValidationFullSplit=PASS
+TestFullSplit=PASS
+IndependentEvidenceVerification=PASS
+```
+
+### 云端清理与关机
+
+正式证据下载并复核后，A69 只删除明确列出的临时 gate/package/bundle/helper 文件：
+
+```text
+DeletedTemporaryFiles=14
+DeletedTemporaryDirectories=4
+RemainingTemporaryCandidates=0
+```
+
+保留：
+
+- `/root/autodl-tmp/small-gpt`；
+- final checkpoint；
+- Full/Tokenized Full；
+- Tokenizer；
+- Day 11 evaluation evidence directory；
+- Day 11 evaluation evidence archive。
+
+最终云端门：
+
+```text
+EvaluatorHead=b8f8fc854b76e5b73c091343a2234ad8521f8005
+WorktreeEntries=0
+GPUComputeProcesses=0
+SmallGPTBackgroundProcesses=0
+ShellBackgroundJobs=0
+FinalEvidenceIntegrity=PASS
+CloudClosureReady=True
+ReleaseAction=NONE
+```
+
+AutoDL 控制台最终显示 A69 为“已关机”，操作按钮为“开机”，系统盘和数据盘仍保留。这证明执行的是 shutdown，不是 release。D34 在 Day 11 中没有被释放。
+
+### 踩坑与纠正
+
+| 问题 | 纠正 |
+| --- | --- |
+| PowerShell 环境没有 `rg` | 后续门禁使用 PowerShell 原生命令或 Python，不再假设 ripgrep 已安装 |
+| 函数名误写为 `Normalize--Paths` | 立即停止，修正精确函数名后重跑，不把失败输出当 PASS |
+| Bash 长脚本粘贴出现 CRLF 和语法损坏 | 检查 raw/normalized bytes 和 SHA，修复为 LF 文件并先执行 `bash -n` |
+| HTTP/2 framing error、HTTP/1.1 443 timeout | 不无限重试；改用本地 complete-history Git bundle |
+| A69 HEAD/tracking 都落后 | 先证明 `07c22a4` 是 exact training source、`23c63a6` 是已知祖先，再 clean-tree `--ff-only` 到 `b8f8fc8` |
+| 自动提醒错误显示 `::SKIP_COMPLETION::` | 该标记不是终端结果；云端全部闭环并关机后停用提醒 |
+| 评估成功后仍有临时脚本/package | 下载复核后按 exact inventory 清理，再检查 GPU、进程和 jobs 为 0 |
+
+### Day 11 最终状态
+
+- [x] model-only strict checkpoint loading；
+- [x] optimizer/scheduler/RNG 不恢复；
+- [x] frozen validation/test stream；
+- [x] 完整 frozen validation；
+- [x] 完整 frozen test；
+- [x] greedy 与 seeded sampling；
+- [x] temperature/top-k/top-p；
+- [x] 固定 6 prompts × 5 decodings；
+- [x] 30 条 JSONL sample 证据；
+- [x] generation archive 下载验证；
+- [x] evaluation archive 下载与独立验证；
+- [x] 最终功能回归 `628 passed`；
+- [x] checkpoint/Tokenizer/data 全程只读；
+- [x] A69 临时文件清理；
+- [x] GPU/后台进程归零；
+- [x] A69 关机；
+- [x] A69、D34 均未释放；
+- [ ] 正式单变量消融尚未执行。
+
+### 下一阶段
+
+Day 12 应在主模型 baseline 已冻结的前提下设计一个单变量消融：
+
+1. 明确唯一改变的变量和因果假设；
+2. 固定数据、Tokenizer、训练 token budget、seed、optimizer 和评估协议；
+3. 先做资源/时间预算，不直接启动云端；
+4. 保留 baseline frozen validation/test 和 generation protocol 作为比较基准；
+5. 不把采样参数变化冒充模型消融；
+6. 不覆盖 Day 10 final checkpoint；
+7. 需要 GPU 时重新取得实例、费用、任务范围和关机授权。
