@@ -2841,3 +2841,491 @@ Day 12 应在主模型 baseline 已冻结的前提下设计一个单变量消融
 5. 不把采样参数变化冒充模型消融；
 6. 不覆盖 Day 10 final checkpoint；
 7. 需要 GPU 时重新取得实例、费用、任务范围和关机授权。
+
+## Day 12：Dropout 0.1 单变量训练消融
+
+日期：2026-08-15 至 2026-08-16
+
+### 今日目标
+
+- 在已冻结的 Day 10/11 Baseline 上完成一次真正的训练消融；
+- 只把 `model.dropout` 从 `0.0` 改为 `0.1`；
+- 保持 seed、模型结构、参数量、数据、Tokenizer、batch、optimizer、scheduler 和 token budget 不变；
+- Treatment 从随机初始化开始，不 resume Baseline；
+- 完整训练 4,578 updates / 300,023,808 tokens；
+- 完成 Treatment frozen full validation；
+- 只有 validation/identity 通过后才执行一次正式 test；
+- 使用 Day 11 冻结的 6 prompts × 5 decodings 生成套件；
+- 比较 Control/Treatment 训练、validation、test、吞吐和生成；
+- 证据下载并通过本地 bytes/SHA/内部身份验证；
+- 所有 RTX 5090 工作结束后关机，但不释放实例；
+- 结论只作为单 seed 描述性工程消融。
+
+### 冻结合同
+
+```text
+ProtocolID=day12-dropout-01-ablation-v1
+ContractStatus=FROZEN
+ContractFingerprint=35e70b57730b6cc8952c2b9a8dae49137aee7c23ac87b85db412a417ffbd7216
+ControlDropout=0.0
+TreatmentDropout=0.1
+ChangedField=model.dropout
+AllowedExperimentalDiffCount=1
+SourceMode=CURRENT_MAIN
+StatisticalScope=single_seed_descriptive_engineering_ablation
+```
+
+保持不变：
+
+| 项目 | 值 |
+| --- | --- |
+| Seed | 1337 |
+| Parameters | 33,833,984 |
+| Tokens/update | 65,536 |
+| Total updates | 4,578 |
+| Planned tokens | 300,023,808 |
+| Full manifest SHA-256 | `ce7cd91075c7c666c427e1aaa286096a7f386643f3a76de3c26ef770d6cce67e` |
+| Dataset fingerprint | `39dab5bacdf8719bbc849e85ddcd7422cba5777fc044b437d050a49b87ab174f` |
+| Tokenizer SHA-256 | `b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5` |
+| Generation fingerprint | `e60f3fb381b3efd8f00bd3f3fc3071c11645c78977dc7c6c40e0fd124b6d1ed0` |
+
+### Treatment 配置与 validator
+
+新增：
+
+```text
+configs/ablation_dropout_01.yaml
+configs/day12_ablation_contract.json
+scripts/check_ablation_contract.py
+tests/test_ablation_contract.py
+```
+
+Treatment 与 Baseline 的精确文件差异：
+
+```text
+BaselineBytes=1258
+TreatmentBytes=1258
+ByteDiffCount=1
+ChangedLineCount=1
+ChangedLineNumber=29
+ChangedFrom=dropout: 0.0
+ChangedTo=dropout: 0.1
+BaselineUnchanged=True
+ExactLineDiff=True
+```
+
+合同 validator：
+
+```text
+ObservedExperimentalDiffCount=1
+ObservedExperimentalDiffPaths=model.dropout
+ControlParameters=33833984
+TreatmentParameters=33833984
+ParameterDelta=0
+ControlTokensPerUpdate=65536
+TreatmentTokensPerUpdate=65536
+ControlTotalUpdates=4578
+TreatmentTotalUpdates=4578
+HeldConstantsMatch=True
+Day12AblationContract=PASS
+```
+
+### 本地验证
+
+定向测试：
+
+```text
+29 passed in 2.09s
+Day12StageC4TargetedValidation=PASS
+```
+
+Treatment CUDA backward：
+
+```text
+Device=cuda
+Seed=1337
+Parameters=33833984
+TrainableParameters=33833984
+InputShape=(1,64)
+LogitsShape=(1,64,16384)
+Loss=9.765543
+GradientTensors=68
+NonzeroGradients=68
+GradientsFinite=True
+Day12StageD2LocalDryRunAndBackward=PASS
+```
+
+完整回归：
+
+```text
+657 passed in 37.47s
+PassedDeltaFromDay11=29
+Day12StageD3FullRegression=PASS
+```
+
+dry-run 没有创建 `runs/day12-dropout-01-dry-run` 或对应 checkpoint 目录。
+
+### 功能提交与 push
+
+```text
+Commit=e66a2bc3a4218ab3b28ec867d70327f9ac9f369e
+Parent=0c1f0040d5bae891e4445b4039cf842990755e7c
+Subject=feat: add verified Day 12 dropout ablation
+Files=4
+Insertions=1438
+```
+
+`git push` 被 PowerShell 包装为 `NativeCommandError`，但 remote 已成功更新。通过 remote probe、fetch 和三方 SHA 调和确认：
+
+```text
+LocalHead=e66a2bc3a4218ab3b28ec867d70327f9ac9f369e
+TrackingHead=e66a2bc3a4218ab3b28ec867d70327f9ac9f369e
+RemoteHead=e66a2bc3a4218ab3b28ec867d70327f9ac9f369e
+AheadOriginMain=0
+BehindOriginMain=0
+Day12StageD7GitClosure=PASS
+```
+
+### F14 环境与离线同步
+
+F14：
+
+```text
+Instance=F14
+Hostname=autodl-container-cvymrkm86b-f0a4f3ac
+GPU=NVIDIA GeForce RTX 5090
+GPUMemoryTotalMiB=32607
+Python=3.12.3
+PyTorch=2.12.1+cu130
+CUDA=13.0
+BF16Supported=True
+```
+
+F14 的 Baseline checkpoint、Tokenizer、Full manifests 和 156 个 tokenized files 全部通过身份检查。GitHub 不可达，因此从 Windows 创建 complete-history bundle：
+
+```text
+Bundle=small-gpt-day12-main-e66a2bc.bundle
+BundleBytes=805927
+BundleSHA256=e17490a1c46a4d3ebfc37bf05875aff2a6fd94132061f9634f6c2598a87bebe1
+BundleHead=e66a2bc3a4218ab3b28ec867d70327f9ac9f369e refs/heads/main
+```
+
+F14 验证 bundle 后以 fast-forward 更新到 `e66a2bc`。原 tracking ref 保持原样，没有伪造 GitHub 同步状态。
+
+云端完整回归：
+
+```text
+657 passed, 2 warnings in 6.24s
+```
+
+Full manifest dry-run：
+
+```text
+ResolvedDevice=cuda:0
+Precision=bf16
+Parameters=33833984
+TokensPerUpdate=65536
+TotalUpdates=4578
+WarmupUpdates=92
+RestoredGlobalStep=0
+RestoredTokensSeen=0
+SourceCommit=e66a2bc3a4218ab3b28ec867d70327f9ac9f369e
+SourceDirty=False
+InputShape=(16,512)
+TargetShape=(16,512)
+NoWrite=True
+```
+
+### 正式 Treatment 训练
+
+```text
+RunID=day12-dropout-01-full-300m-20260815-182244
+FrozenAt=2026-08-15T18:22:44+08:00
+TrainingStartedAt=2026-08-15T18:27:23+08:00
+FreshInitialization=True
+ResumeArgumentPresent=False
+```
+
+训练启动状态：
+
+```text
+RestoredGlobalStep=0
+RestoredTokensSeen=0
+DataBatchesConsumed=0
+DataSamplesConsumed=0
+```
+
+训练完成：
+
+```text
+FinalGlobalStep=4578
+FinalTokensSeen=300023808
+FinalTrainLoss=4.015954345465
+FinalTrainGradNorm=0.662381887436
+FinalTrainTokensPerSecond=210093.539130
+EvaluationsThisRun=9
+CheckpointsThisRun=5
+TrainingProcessComplete=True
+```
+
+Final checkpoint：
+
+```text
+Bytes=406108827
+SHA256=29b15304f7e6f62b29b1ba4f4b5b6f591d4dcbc7e336ef79bd64486468fcb3ad
+```
+
+### Metrics audit
+
+```text
+MetricsBytes=1462596
+MetricsSHA256=139fe92f73b6bc27467c847f7c9a27faf60d91c1ee2579381ee940de0929349c
+MetricsRecordCount=4593
+RunStartEvents=1
+TrainUpdateEvents=4578
+EvaluationEvents=9
+CheckpointEvents=5
+TotalMicroSteps=36624
+TotalSamples=585984
+FinalTokensSeen=300023808
+AllMetricsFinite=True
+```
+
+验证通过：step continuity、token conservation、LR schedule、evaluation schedule、checkpoint schedule、event ordering 和 fresh initialization。
+
+```text
+UpdateElapsedSeconds=1393.659973
+EvaluationElapsedSeconds=11.599804
+CheckpointSaveSeconds=3.462183
+AggregateUpdateThroughput=215277.624224
+TrainingMetricsAudit=PASS
+```
+
+### F14 到 E85 迁移
+
+F14 出现机器问题后，用户克隆到 E85。迁移 gate：
+
+```text
+Instance=E85
+Hostname=autodl-container-6jq3ca2nm5-edcb6602
+Head=e66a2bc3a4218ab3b28ec867d70327f9ac9f369e
+TreatmentMetricsHashMatch=True
+TreatmentCheckpointHashMatch=True
+BoundedSmokeJSONHashMatch=True
+FormalTrainingRerunRequired=False
+```
+
+E85 重新运行完整 metrics audit 并通过。正式训练没有重跑。F14 随后关机但未释放。
+
+### Treatment frozen full validation
+
+```text
+Split=validation
+FullSplit=True
+AvailableBatches=457
+EvaluatedBatches=457
+EvaluatedTokens=3741184
+TrailingTokensDiscarded=160
+Loss=3.893882904755
+Perplexity=49.101172028751
+OutputSHA256=6d8a03c86206ffded1040b7ed512303bd7ab95dd099ce400e09ea9222c944b44
+Day12StageH1TreatmentFrozenFullValidation=PASS
+```
+
+### Treatment one-shot frozen test
+
+validation 和所有 identity gate 通过后执行唯一一次正式 test：
+
+```text
+Split=test
+FullSplit=True
+AvailableBatches=430
+EvaluatedBatches=430
+EvaluatedTokens=3517952
+TrailingTokensDiscarded=456
+Loss=3.905327702658
+Perplexity=49.666353041570
+OutputSHA256=6332dcc1f3c0f995ebcc77a73b38c95a832b3aaa29853430cdbbe2b2879d5653
+OneShotFormalTestConsumed=True
+FormalTestMustNotBeRerun=True
+Day12StageH2TreatmentOneShotFrozenTest=PASS
+```
+
+### Treatment generation suite
+
+```text
+ProtocolID=day11-baseline-generation-v1
+ProtocolFingerprint=e60f3fb381b3efd8f00bd3f3fc3071c11645c78977dc7c6c40e0fd124b6d1ed0
+PromptCount=6
+DecodingCount=5
+CompletedSamples=30
+GenerationPrecision=fp32
+GeneratedTokens=1920
+ForwardPasses=1920
+ContextCropEvents=0
+EOSStops=0
+MaxTokenStops=30
+```
+
+证据：
+
+```text
+ManifestBytes=5318
+ManifestSHA256=03160e2196e5c0cf399698efe9fe60cae11c1fecf66b599e46364045e03cafdf
+SamplesBytes=84568
+SamplesSHA256=1f0a86d92022caa6fd50a00df59d19f46123e416e5b7c4225847230a3fc81f58
+Day12StageITreatmentFormalGenerationSuite=PASS
+```
+
+### Control 与 Treatment 定量比较
+
+Control 在全部 9 个 training validation 节点获胜：
+
+| Step | Control loss | Treatment loss | Delta |
+| ---: | ---: | ---: | ---: |
+| 500 | 5.235283 | 5.284547 | +0.049264 |
+| 1,000 | 4.583346 | 4.689900 | +0.106554 |
+| 1,500 | 4.259436 | 4.338399 | +0.078962 |
+| 2,000 | 4.105180 | 4.175108 | +0.069928 |
+| 2,500 | 4.004211 | 4.072018 | +0.067806 |
+| 3,000 | 3.935036 | 4.004207 | +0.069172 |
+| 3,500 | 3.884580 | 3.957169 | +0.072589 |
+| 4,000 | 3.852903 | 3.926912 | +0.074009 |
+| 4,500 | 3.832705 | 3.909347 | +0.076642 |
+
+最终指标：
+
+| 指标 | Control | Treatment | 相对变化 |
+| --- | ---: | ---: | ---: |
+| Frozen validation loss | 3.819582 | 3.893883 | +1.945254% |
+| Frozen validation perplexity | 45.585164 | 49.101172 | +7.713053% |
+| Frozen test loss | 3.830240 | 3.905328 | +1.960388% |
+| Frozen test perplexity | 46.073601 | 49.666353 | +7.797853% |
+| Aggregate update throughput | 223,777.324 | 215,277.624 | -3.798285% |
+| Update elapsed seconds | 1,340.725 | 1,393.660 | +3.948250% |
+
+```text
+QuantitativeAblationOutcome=CONTROL_BETTER_ON_FROZEN_VALIDATION_AND_TEST
+StatisticalScope=DESCRIPTIVE_SINGLE_SEED
+StatisticalSignificanceClaim=False
+```
+
+### Frozen generation 对比
+
+Baseline generation archive 在 Windows 找回并验证：
+
+```text
+ArchiveBytes=11777
+ArchiveSHA256=f1063bfcf048d5ffa8085be188203f3ed5638d1d31658e4d5962adf35214befa
+ManifestSHA256=bd496565a4e669192bd660b9fc9cf546265b8a31419fd75cdab99858e5023953
+SamplesSHA256=59decb14aff48fc52a6ee67247d8c15f9ad3a83066afc010eb5b957a9d1bc8cd
+```
+
+30 对 sample keys、prompt、protocol 和 token count 完全对齐。
+
+| 指标 | Control | Treatment |
+| --- | ---: | ---: |
+| Mean unique-token ratio | 0.624479 | 0.597917 |
+| Mean distinct-2 | 0.782540 | 0.777778 |
+| Mean longest repeated span | 7.333333 | 7.466667 |
+| Repeated span ≥8 samples | 6 | 6 |
+
+逐样本 unique-token ratio：Control 胜 17、Treatment 胜 11、平 2。Treatment 的 greedy 多样性略高，但两组 6/6 greedy 都发生明显循环；Treatment 在四种随机采样上的平均唯一 token 比例都更低。
+
+人工检查确认两组都存在重复、跑题、事实幻觉、语义断裂和指令执行失败。Treatment 没有显示可靠总体生成改善。
+
+```text
+GenerationComparisonOutcome=NO_CLEAR_TREATMENT_IMPROVEMENT
+CrossMachineBitwiseClaim=False
+GenerationSpeedCausalComparisonAllowed=False
+```
+
+### Evidence 下载与本地验证
+
+Windows comparison package：
+
+```text
+File=small-gpt-day12-comparison-inputs-e66a2bc-20260815-182244.zip
+Bytes=603680
+SHA256=1b5912c1122fabbca01532d64d9a33062c0208e1f94a50380d995883572f2ea4
+Entries=14
+CRC=PASS
+InternalHashes=PASS
+```
+
+Treatment final checkpoint：
+
+```text
+Bytes=406108827
+SHA256=29b15304f7e6f62b29b1ba4f4b5b6f591d4dcbc7e336ef79bd64486468fcb3ad
+Day12TreatmentCheckpointLocalVerification=PASS
+```
+
+### 云端关机
+
+- [x] F14 已关机；
+- [x] E85 已关机；
+- [x] 不再占用 RTX 5090；
+- [x] 没有释放实例；
+- [x] test 没有重跑；
+- [x] generation suite 没有覆盖；
+- [x] 云端证据保留；
+- [x] 本地 evidence 和 checkpoint 已验证。
+
+### 踩坑与纠正
+
+| 问题 | 纠正 |
+| --- | --- |
+| Dry-run 输出 `cuda:0` 被错误 gate 判为非 CUDA | 修正语义检查，并运行真实 CUDA backward |
+| Push 输出被 PowerShell 包装为异常 | 查询 remote SHA 后确认 push 已生效，不盲目重推 |
+| 首次 contract SHA gate 写错 expected | 使用冻结实际 SHA 后重跑只读 gate |
+| Smoke JSON 顶层字段假设错误 | 先 inventory schema，再按嵌套真实字段审计 |
+| Metrics 存在四种 record shapes | 先统计 event/keys/shape，再运行正式连续性审计 |
+| F14 故障后担心重训 | E85 对 metrics/checkpoint/smoke 做 exact hash gate，确认不重训 |
+| Bash 变量名被当成命令 | 从最近 PASS 点恢复，不重跑 test 或生成 |
+| E85 没有 Baseline generation archive | 回到 Windows Day 11 权威本地路径，不开云端、不重新生成 |
+| Checkpoint hardlink 显示旧 mtime | 用 bytes/SHA 判断身份，旧 mtime 是 hardlink 正常行为 |
+| 文档 source ZIP 总 entries 为 10 而非 8 | 区分 8 个 file entries 与 2 个 directory entries |
+
+### Day 12 最终实验状态
+
+- [x] 正式单变量合同；
+- [x] `dropout=0.0` Control；
+- [x] `dropout=0.1` Treatment；
+- [x] 其余条件保持不变；
+- [x] Treatment fresh initialization；
+- [x] 4,578 updates；
+- [x] 300,023,808 tokens；
+- [x] 完整 metrics audit；
+- [x] 完整 frozen validation；
+- [x] 一次性 frozen test；
+- [x] 固定 30-sample generation suite；
+- [x] Control/Treatment 定量比较；
+- [x] Control/Treatment 生成比较；
+- [x] Treatment checkpoint 本地备份；
+- [x] evidence package 本地验证；
+- [x] F14、E85 关机；
+- [x] Control 保留；
+- [x] 不声明统计显著性；
+- [x] 不声明跨机器 bitwise 相同。
+
+### Day 12 结论
+
+`dropout=0.1` 在当前固定 300M-token 训练预算下没有改善泛化或整体生成质量。Control 在所有训练过程 validation 节点、完整 validation、完整 test 和吞吐上更优；Treatment 的 greedy 局部多样性改善不足以抵消所有 greedy 样本仍循环以及随机采样多样性下降。
+
+最终选择：
+
+```text
+OverallAblationDecision=RETAIN_CONTROL_DROPOUT_0_0
+```
+
+当前 checkpoint-to-evaluation/generation 工程链路工作正常。差生成质量更符合 34M 参数、300M-token 预算、纯预训练目标和无指令微调的能力边界；本轮不能在训练预算、模型容量和数据构成之间作唯一因果归因。
+
+### 下一阶段
+
+1. 完成 README、daily log 和 Day 12 专项报告；
+2. 运行文档语义、格式和 Git scope 检查；
+3. 精确暂存三份文档；
+4. 创建 Day 12 文档提交并 push；
+5. 输出最终复现指南与超详细交接文档；
+6. 不再开启 RTX 5090，除非未来批准新的独立实验协议。

@@ -8,8 +8,8 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 当前阶段 | Day 11 的 final checkpoint 只读加载、frozen validation/test 与固定生成协议已完成；下一阶段为单变量消融 |
-| 自动测试 | Day 11 最终功能提交 `b8f8fc8`：`628 passed in 18.73s` |
+| 当前阶段 | Day 12 Dropout 0.1 单变量消融已完成；Control 在 frozen validation/test 上更优，保留 `dropout=0.0` |
+| 自动测试 | Day 12 功能提交 `e66a2bc`：本地与云端均为 `657 passed` |
 | 数据集 | `HuggingFaceFW/fineweb-edu` / `sample-10BT` |
 | 数据访问方式 | 固定 revision、14 个显式 Parquet 源文件、经过 bytes/SHA 验证的可恢复本地 cache |
 | 数据管线 | 支持清洗、去重、划分、分片、恢复与完整性校验 |
@@ -33,6 +33,10 @@
 | Day 11 Frozen validation | 完整 457 batches / 3,741,184 tokens；loss 3.819582 / perplexity 45.585164 |
 | Day 11 Frozen test | 完整 430 batches / 3,517,952 tokens；loss 3.830240 / perplexity 46.073601 |
 | Day 11 文本生成 | 6 prompts × 5 decoding strategies = 30 samples；固定协议、token IDs 与 JSONL 证据已归档 |
+| Day 12 Treatment 训练 | Dropout 0.1；BF16 4,578 updates / 300,023,808 tokens；final train loss 4.015954 |
+| Day 12 Treatment validation | 完整 457 batches / 3,741,184 tokens；loss 3.893883 / perplexity 49.101172 |
+| Day 12 Treatment test | 一次性完整 430 batches / 3,517,952 tokens；loss 3.905328 / perplexity 49.666353 |
+| Day 12 消融结论 | Control 在 9/9 training validation、frozen validation 和 test 上更优；生成无明确 Treatment 改善 |
 | Git 分支 | `main` |
 
 > FineWeb-Edu 的 `provided_token_count` 使用上游 Tokenizer 口径，只用于语料采集预算。当前项目 BPE 在全 Pilot 上产生 2,129,776 个模型 token，比 2,000,083 个 provided tokens 高约 6.48%。后续训练预算以项目 Tokenizer 的实际 token 数为准。
@@ -398,6 +402,63 @@ Evaluation/generation source commit = b8f8fc854b76e5b73c091343a2234ad8521f8005
 
 人工检查显示，greedy 输出存在明显重复循环；随机采样提高了词汇和句式多样性，但仍有主题漂移、事实拼接和语义不连贯。这证明 checkpoint-to-text 工程链路已经成立，不证明 34M、300M-token 的基础模型已经具备聊天助手质量。完整证据、实现边界和样例分析见 [Day 11 Frozen Evaluation 与文本生成执行报告](reports/day-11-evaluation-generation-report.md)。
 
+## Day 12 Dropout 0.1 单变量消融结果
+
+Day 12 冻结协议 `day12-dropout-01-ablation-v1`，只改变一个实验字段：
+
+```text
+Control   model.dropout=0.0
+Treatment model.dropout=0.1
+```
+
+Control 使用 Day 10 正式 Baseline；Treatment 从随机初始化开始，不 resume Control。两组保持 seed、模型结构、33,833,984 参数、Full 数据、Tokenizer、batch、AdamW、warmup/cosine、4,578 updates、300,023,808 tokens、frozen evaluator 和 generation protocol 不变。
+
+合同与功能源码：
+
+| 项目 | 值 |
+| --- | --- |
+| Contract fingerprint | `35e70b57730b6cc8952c2b9a8dae49137aee7c23ac87b85db412a417ffbd7216` |
+| Functional commit | `e66a2bc3a4218ab3b28ec867d70327f9ac9f369e` |
+| Treatment run | `day12-dropout-01-full-300m-20260815-182244` |
+| Treatment checkpoint SHA-256 | `29b15304f7e6f62b29b1ba4f4b5b6f591d4dcbc7e336ef79bd64486468fcb3ad` |
+| Treatment metrics SHA-256 | `139fe92f73b6bc27467c847f7c9a27faf60d91c1ee2579381ee940de0929349c` |
+
+训练与 frozen evaluation 对比：
+
+| 指标 | Control | Treatment | Treatment 相对变化 | Winner |
+| --- | ---: | ---: | ---: | --- |
+| Final train loss | 3.830253 | 4.015954 | +4.848266% | Control |
+| Final training validation loss | 3.832705 | 3.909347 | +1.999674% | Control |
+| Frozen validation loss | 3.819582 | 3.893883 | +1.945254% | Control |
+| Frozen validation perplexity | 45.585164 | 49.101172 | +7.713053% | Control |
+| Frozen test loss | 3.830240 | 3.905328 | +1.960388% | Control |
+| Frozen test perplexity | 46.073601 | 49.666353 | +7.797853% | Control |
+| Aggregate update throughput | 223,777 tokens/s | 215,278 tokens/s | -3.798285% | Control |
+
+Control 在 9/9 个匹配的 training validation 节点上 loss 都更低。Treatment 的完整 validation 与一次性 test 都通过严格 checkpoint、Tokenizer、manifest、coverage 和 evaluator identity 门，但结果没有优于 Control。
+
+两组生成证据按相同 6 prompts × 5 decodings 对齐，共比较 30 对 continuation：
+
+- prompt、decoding、Tokenizer、64-token 上限和 sample key 顺序完全一致；
+- 两组均为 30 次 `max_new_tokens`、0 次 EOS、0 次 context crop；
+- Control 与 Treatment 的 6/6 greedy 样本都出现明显循环；
+- Treatment 的 greedy 表面多样性略高，但四种随机采样的平均唯一 token 比例都低于 Control；
+- 两组都存在跑题、幻觉、语义断裂和 instruction following 失败；
+- Control generation 在 RTX 5060/PyTorch 2.11 上执行，Treatment 在 RTX 5090/PyTorch 2.12 上执行，因此不声明跨机器 bitwise 相同，也不将生成速度差归因于 dropout。
+
+正式决策：
+
+```text
+QuantitativeAblationOutcome=CONTROL_BETTER_ON_FROZEN_VALIDATION_AND_TEST
+GenerationComparisonOutcome=NO_CLEAR_TREATMENT_IMPROVEMENT
+OverallAblationDecision=RETAIN_CONTROL_DROPOUT_0_0
+StatisticalScope=DESCRIPTIVE_SINGLE_SEED
+```
+
+这个结果说明 `dropout=0.1` 不能在当前固定 300M-token 预算下修复生成退化，并且使训练与完整评估结果变差。它不能单独区分训练预算、模型容量和数据构成的贡献，但支持“工程链路有效、当前质量主要受小模型与有限预训练/无指令微调能力边界约束”的解释。
+
+Treatment final checkpoint、metrics、full validation、one-shot test、generation suite 和 comparison package 均已保存并通过本地 SHA 验证。F14、E85 均已关机但未释放。完整合同、迁移、指标、生成对齐、证据哈希和踩坑见 [Day 12 Dropout 0.1 单变量消融执行报告](reports/day-12-dropout-ablation-report.md)。
+
 ## 数据管线能力
 
 `scripts/build_fineweb_edu_corpus.py` 已实现：
@@ -618,7 +679,9 @@ python scripts/run_generation_suite.py `
 - `configs/tokenizer.yaml`：ByteLevel BPE 训练、产物和评估配置；
 - `configs/tokenized_data.yaml`：冻结 Pilot 的 tokenized binary、索引、发布恢复和 Dataset 契约；
 - `configs/tokenized_data_full.yaml`：与 Full source manifest 身份绑定的正式编码配置。
-- `configs/day11_generation_protocol.json`：Day 11 固定 prompts、seed、64-token 上限和五种解码角色。
+- `configs/day11_generation_protocol.json`：Day 11/12 共用的固定 prompts、seed、64-token 上限和五种解码角色；
+- `configs/ablation_dropout_01.yaml`：Day 12 Treatment 配置，相对 Baseline 只把 `model.dropout` 从 `0.0` 改为 `0.1`；
+- `configs/day12_ablation_contract.json`：冻结单变量、held constants、训练预算、评估协议和统计边界。
 
 ## 本地验证
 
@@ -629,6 +692,15 @@ python .\scripts\check_env.py
 python .\scripts\check_config.py
 python -m pytest -q
 ```
+
+Day 12 功能提交的本地完整测试结果：
+
+```text
+657 passed in 37.47s
+Exit code: 0
+```
+
+同一 `e66a2bc` 功能源码在 F14 RTX 5090 环境的完整回归为 `657 passed, 2 warnings in 6.24s`。两个 warning 来自 Python 3.12 对多线程进程中 `fork()` 的弃用提示；测试本身通过。
 
 Day 10 文档收口的本地完整测试结果：
 
@@ -678,19 +750,22 @@ Day 10 没有修改训练源码或冻结配置；正式 run 使用 `07c22a4`。�
 - frozen evaluation identity、有限指标、原子发布与拒绝覆盖；
 - greedy/sample、temperature、top-k、top-p、独立 RNG、EOS 与 context crop；
 - generation protocol schema/fingerprint、单次 artifact load、ordered JSONL 与失败不发布。
+- Day 12 ablation contract 唯一差异、held constants、参数量、token budget、generation protocol 和错误拒绝路径。
 
 ## 项目结构
 
 ```text
 small-gpt/
 ├── configs/
+│   ├── ablation_dropout_01.yaml
 │   ├── baseline.yaml
 │   ├── data_fineweb_edu.yaml
+│   ├── day11_generation_protocol.json
+│   ├── day12_ablation_contract.json
 │   ├── debug.yaml
 │   ├── tokenizer.yaml
 │   ├── tokenized_data.yaml
-│   ├── tokenized_data_full.yaml
-│   └── day11_generation_protocol.json
+│   └── tokenized_data_full.yaml
 ├── data/                          # 本地生成数据，不提交到 Git
 ├── data_pipeline/
 │   ├── __init__.py
@@ -729,10 +804,12 @@ small-gpt/
 │   ├── day-08-resource-calibration-report.md
 │   ├── day-09-full-data-report.md
 │   ├── day-10-pretraining-report.md
-│   └── day-11-evaluation-generation-report.md
+│   ├── day-11-evaluation-generation-report.md
+│   └── day-12-dropout-ablation-report.md
 ├── scripts/
 │   ├── build_fineweb_edu_corpus.py
 │   ├── check_checkpoint_resume.py
+│   ├── check_ablation_contract.py
 │   ├── check_config.py
 │   ├── check_env.py
 │   ├── check_training_config.py
@@ -753,6 +830,7 @@ small-gpt/
 │   └── train_tokenizer.py
 ├── tests/
 │   ├── test_attention.py
+│   ├── test_ablation_contract.py
 │   ├── test_binary_format.py
 │   ├── test_checkpoint.py
 │   ├── test_config.py
@@ -823,7 +901,8 @@ small-gpt/
 - [x] Day 9：构建并验证 350M Full、379.6M Tokenized Full 与单更新 smoke
 - [x] Day 10：完成 4,578 updates / 300,023,808 tokens 正式预训练与 checkpoint/metrics 归档
 - [x] Day 11：完成 strict checkpoint 推理加载、完整 frozen validation/test 与固定生成协议
-- [ ] 完成至少一个消融实验
+- [x] Day 12：完成 Dropout 0.1 单变量训练、完整评估、生成对比与证据归档；保留 Control
+- [x] 完成至少一个消融实验
 
 ## 文档
 
@@ -847,11 +926,12 @@ small-gpt/
 - [Day 9 Full 数据与单更新验收报告](reports/day-09-full-data-report.md)
 - [Day 10 300M-token 正式预训练执行报告](reports/day-10-pretraining-report.md)
 - [Day 11 Frozen Evaluation 与文本生成执行报告](reports/day-11-evaluation-generation-report.md)
+- [Day 12 Dropout 0.1 单变量消融执行报告](reports/day-12-dropout-ablation-report.md)
 
 ## 当前阶段
 
-Day 11 已经完成。Day 10 final checkpoint 通过 model-only strict loader 被只读加载；完整 frozen validation 为 `loss=3.819582 / perplexity=45.585164`，完整 frozen test 为 `loss=3.830240 / perplexity=46.073601`。两者都绑定同一 checkpoint、Tokenizer、Tokenized Full manifest 和评估源码身份。
+Day 12 已经完成首个正式训练消融。Control 为 `dropout=0.0`，Treatment 为 `dropout=0.1`；其余训练、数据、Tokenizer、模型结构、预算、评估和生成协议全部冻结。Treatment 从随机初始化训练 4,578 updates / 300,023,808 tokens，没有 resume Baseline。
 
-固定生成协议完成 6 prompts × 5 decodings 共 30 samples，保留全部 token IDs、参数、seed、运行时、停止原因和文本。结果显示工程链路可用，但 greedy 重复和随机采样语义漂移仍明显，模型质量边界必须如实保留。
+Control 在 9/9 training validation 节点、完整 frozen validation 和一次性 frozen test 上都更优。Treatment frozen validation 为 `loss=3.893883 / perplexity=49.101172`，test 为 `loss=3.905328 / perplexity=49.666353`，均差于 Control。固定 30 对生成样本没有显示 Treatment 的明确总体改善，两组 greedy 都持续循环。
 
-两份正式证据均在仓库外保存并完成下载复核。A69 在数据/权重/证据保全、临时文件清理以及 GPU/后台进程归零后已经关机但未释放；D34 也未释放。下一阶段是设计一次只改变单一变量、预算和评估协议可比较的消融实验，而不是继续调采样参数来替代消融。
+因此项目保留 Baseline `dropout=0.0`。该结论只适用于当前单 seed、34M 参数与固定 300M-token 预算，不声明统计显著性。Treatment checkpoint、metrics、evaluation、generation 和 comparison evidence 已完成下载与本地 SHA 验证；F14、E85 都已关机但未释放。Day 12 的执行证据与仓库报告已经收口，下一阶段是整理项目级复现总结，不需要继续占用云端 GPU。
