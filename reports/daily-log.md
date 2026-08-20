@@ -3329,3 +3329,482 @@ OverallAblationDecision=RETAIN_CONTROL_DROPOUT_0_0
 4. 创建 Day 12 文档提交并 push；
 5. 输出最终复现指南与超详细交接文档；
 6. 不再开启 RTX 5090，除非未来批准新的独立实验协议。
+
+## Day 13：Jetson Orin Nano Super 8GB 推理部署
+
+日期：2026-08-20
+
+### 今日目标
+
+- 将 Day 10 冻结的 `dropout=0.0` Control checkpoint 部署到真实 Jetson Orin Nano Super 8GB；
+- 保持 Baseline config、Tokenizer 和 checkpoint bytes/SHA 不变；
+- 使用 Jetson 现有 NVIDIA aarch64 PyTorch CUDA runtime；
+- 完成 model-only load、FP32/FP16 smoke、benchmark 和 stability；
+- 记录 CUDA allocator、系统内存、温度、功耗模式与失败恢复；
+- 将 evidence archive 传回 Windows 并独立验证；
+- 不训练、不写 checkpoint、不重跑 formal test；
+- 不实现或冒充 KV Cache、TensorRT、INT8 或机器人控制。
+
+### Stage A：Git 起点与远端身份
+
+Windows `main` 从 Day 12 文档闭环提交开始：
+
+```text
+StartingHead=0319f80766991eead65556df564497036605d1a3
+Branch=main
+LocalHead=0319f80766991eead65556df564497036605d1a3
+TrackingHead=0319f80766991eead65556df564497036605d1a3
+RemoteHead=0319f80766991eead65556df564497036605d1a3
+ThreeWayIdentity=True
+WorktreeEntries=0
+AheadOriginMain=0
+BehindOriginMain=0
+Day13StageAGitIdentity=PASS
+```
+
+### Stage B：冻结 artifact、Tokenizer 与回归
+
+Control artifact gate：
+
+```text
+CheckpointBytes=406108827
+CheckpointSHA256=a39f8378ebe4012afb992be451d355e814b856ffb5e690ac011758f9db614b51
+TokenizerBytes=1137073
+TokenizerSHA256=b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5
+BaselineBytes=1258
+BaselineSHA256=ca8524c425e1e5e3a600de5773f9a526ef3674741040635bee91fe31f4b24c0e
+Day13StageB1FrozenArtifactGate=PASS
+```
+
+Tokenizer runtime probe：
+
+```text
+TokenizersVersion=0.23.1
+VocabularySize=16384
+SpecialTokenIDs=<bos>:0,<eos>:1,<pad>:2,<unk>:3
+ProbeTokenIDs=[10235,2026,261,698]
+ProbeUnknownTokenCount=0
+Day13StageB2TokenizerRuntimeGate=PASS
+```
+
+修改前完整回归：
+
+```text
+657 passed in 71.35s
+HeadStable=True
+WorktreeEntriesAfter=0
+Day13StageB3FullRegressionGate=PASS
+```
+
+### Stage C：Jetson 设备、内存、磁盘与网络
+
+设备身份：
+
+```text
+DeviceModel=NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super
+Architecture=aarch64
+Kernel=5.15.148-tegra
+L4TRelease=R36.4.3
+Ubuntu=22.04.5 LTS
+Python=3.10.12
+NvidiaJetPackPackageVersion=NOT_INSTALLED
+```
+
+内存与存储：
+
+```text
+MemTotalKiB=7802708
+MemTotalGiB=7.44
+SwapTotalGiB=11.72
+RootSource=/dev/nvme0n1p1
+RootFileSystemType=ext4
+RootReadOnly=False
+RootTotalGiB=87.64
+RootAvailableGiB=11.76
+NVMeDisk=nvme0n1|256060514304|SSD NVME 256GB
+Day13StageC2MemoryDiskGate=PASS
+```
+
+功耗与空闲温度：
+
+```text
+NVPowerMode=MAXN_SUPER
+IdleTemperatureRangeC=44.5..46.8
+IdleVDD_INApproxW=5.2..5.3
+PowerModeChanged=False
+JetsonClocksAttempted=False
+```
+
+厂商 `ROSMASTER-A1` Wi-Fi profile 原为 AP/shared 模式，却配置无效默认路由 `192.168.1.1`，导致外网和 NTP 不可达。关闭热点并连接真实 Wi-Fi 后：
+
+```text
+InternetPing=PASS
+DNSResolution=PASS
+SystemClockSynchronized=yes
+NTPService=active
+TimeZone=Asia/Shanghai
+```
+
+Windows 与 Jetson 的 1 Gbps 有线链路继续使用固定地址 `192.168.50.2`，SSH 保持稳定。
+
+### Stage D：原生 CUDA runtime 决策
+
+设备已有 PyTorch：
+
+```text
+TorchVersion=2.5.0a0+872d972e41.nv24.08
+TorchCUDA=12.6
+TorchCUDNN=90600
+CUDAAvailable=True
+CUDADeviceCount=1
+CUDADeviceName=Orin
+ComputeCapability=(8,7)
+BF16Supported=True
+FP32ForwardBackward=PASS
+FP16ForwardBackward=PASS
+Day13StageD1NativeRuntimeCandidateGate=PASS
+```
+
+临时 venv 验证 PyTorch 可通过 user site 继承，CUDA 计算 finite；`tokenizers` 当时不可见，符合预期。关键 PyTorch metadata、RECORD、`torch._C` 和 `libtorch_cuda.so` 建立组合身份：
+
+```text
+RuntimeIdentitySHA256=44b65f0ac7be423affd46a4a0f80299c49a69ccd7f49385809ba3d5762d3ad40
+Day13StageD2VenvInheritanceGate=PASS
+Day13StageD3RuntimeIdentityGate=PASS
+```
+
+正式 runtime 路线冻结为 `native_existing`。
+
+### Stage E：部署实现
+
+修改前 gate 确认 functional HEAD、clean worktree、Baseline bytes/SHA、Windows `.venv` Python 与四个目标文件均符合预期。随后只新增：
+
+```text
+configs/day13_jetson_deployment_protocol.json
+scripts/benchmark_jetson_inference.py
+scripts/check_jetson_deployment.py
+tests/test_day13_jetson_deployment.py
+```
+
+部署协议：
+
+```text
+ProtocolID=day13-jetson-pytorch-inference-v1
+ProtocolStatus=frozen_after_user_approval
+TrainingAllowed=False
+KVCacheImplemented=False
+TensorRTEnabled=False
+```
+
+dry-run 不读取 checkpoint、config 或 Tokenizer，不写输出，不构造模型，不生成文本。
+
+### Stage F：测试、精确提交与 push
+
+定向测试：
+
+```text
+55 passed in 1.75s
+Day13StageF1TargetedTests=PASS
+```
+
+CLI、compile 与 dry-run gate 全部通过。完整回归：
+
+```text
+712 passed in 53.33s
+OriginalTests=657
+Day13Tests=55
+Day13StageF3FullRegression=PASS
+```
+
+精确 diff/staging 只包含四个新文件，Baseline 未修改。功能提交：
+
+```text
+FunctionalHead=4c946adffc0e5ee24b1377662819491a86c40aa5
+Parent=0319f80766991eead65556df564497036605d1a3
+Subject=feat: add verified Jetson inference deployment
+FileCount=4
+Insertions=3078
+```
+
+`git push` 的正常 remote 输出再次被 PowerShell 包装为异常。没有盲目重复 push；执行 fetch 与三方核验后确认：
+
+```text
+LocalHead=4c946adffc0e5ee24b1377662819491a86c40aa5
+TrackingHead=4c946adffc0e5ee24b1377662819491a86c40aa5
+RemoteHead=4c946adffc0e5ee24b1377662819491a86c40aa5
+AheadOriginMain=0
+BehindOriginMain=0
+Day13StageF=PASS
+```
+
+### Stage G：离线 package
+
+Windows 创建 complete-history Git bundle、runtime assets ZIP 和 transfer manifest。bundle：
+
+```text
+Filename=small-gpt-day13-main-4c946adf.bundle
+Bytes=855711
+SHA256=df8539423ee2156ee9580f40bb8dbce31769d5e3b596862e653cd4a1c3a3ae09
+BundleMainHead=4c946adffc0e5ee24b1377662819491a86c40aa5
+```
+
+第一次使用 `Compress-Archive` 创建的 assets ZIP 含三个反斜杠 entry，规范化后内容正确，但路径安全/CRC gate 按原始 entry 拒绝。错误包移入 quarantine，保留 200,977 bytes 与 SHA `8ce49af7...` 作为失败证据。随后使用 Python ZIP 明确写入正斜杠：
+
+```text
+AssetsZipBytes=194295
+AssetsZipSHA256=99aaaad158c97eecf91bedd03097de7b14de3f5647c06935485c731281379387
+EntryCount=5
+BackslashEntryCount=0
+UnsafeEntryCount=0
+BadCRCEntry=NONE
+Day13StageG3RuntimeAssets=PASS
+```
+
+outer manifest 只列 bundle、assets ZIP 和 checkpoint source identity；406 MB checkpoint 没有复制进 build root。
+
+### Stage H：传输到 Jetson
+
+创建 incoming 目录的长远端命令在成功创建目录后出现 `unexpected end of file`，SSH exit 为 2。恢复过程不重复 mutation，只读确认：
+
+```text
+IncomingPath=/home/jetson/small-gpt-day13-incoming-4c946adf
+Owner=jetson
+Mode=750
+EntryCount=0
+Day13StageH1RecoveryVerification=PASS
+```
+
+bundle、assets ZIP 和 checkpoint 分别 SCP；Jetson 端 exact entry count 为 3，三者 bytes/SHA 全部匹配。Stage H 完成进度为 60%。
+
+### Stage I：Jetson 部署目录与永久 runtime
+
+部署根：
+
+```text
+/home/jetson/small-gpt-day13
+```
+
+bundle clone、`git bundle verify`、`git fsck` 与 source worktree clean 全部通过。assets 解压后的五个文件通过内部 SHA；checkpoint 被复制到 artifacts 目录并验证为不同 inode、相同 bytes/SHA。
+
+第一次 Stage I2 从 Windows 将超长脚本作为 `ssh.exe` 单个参数，触发“文件名或扩展名太长”。没有远端 mutation。恢复版通过 stdin 向 Bash 传入脚本，下载并冻结 aarch64 wheel：
+
+```text
+Wheel=tokenizers-0.23.1-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+WheelBytes=3374081
+WheelSHA256=1bf13402aff9bc533c89cb849ec3b412dc3fbeacc9744840e423d7bf3f7dc0e3
+Venv=/home/jetson/small-gpt-day13/.venv-jetson
+PermanentRuntimeProbe=PASS
+Day13StageI=PASS
+```
+
+### Stage J：Model-only load
+
+pre-load gate 检查 source、七个路径、evidence 可写、2 GiB 可用内存门、温度、功耗模式、冲突进程、runtime 和 dry-run。正式 load-only：
+
+```text
+StrictStateDictLoad=True
+MissingKeys=0
+UnexpectedKeys=0
+Parameters=33833984
+Dropout=0.0
+ContextLength=512
+VocabularySize=16384
+Device=cuda:0
+Precision=fp32
+ModelLoadSeconds=2.524338
+InputShape=[1,4]
+LogitsShape=[1,4,16384]
+LogitsFinite=True
+OptimizerStateRestored=False
+SchedulerStateRestored=False
+TrainingResume=False
+Day13StageJ=PASS
+```
+
+`load-only.json` 为 3,598 bytes，SHA `ab9455fc3f6f8935549d89b859381095dc40e2dd1dbabb86a5ff9b19d0358518`。
+
+### Stage K：FP32 smoke
+
+```text
+RunID=day13-jetson-control-fp32-20260820T184158Z
+CompletedSamples=3
+GeneratedTokens=192
+AllTokenIDsInRange=True
+AllLogitsFinite=True
+OOMCount=0
+MeanEndToEndTokensPerSecond=65.664218
+MeanDecodeTokensPerSecond=69.931027
+MaximumTemperatureC=49.406
+MaximumGR3DPercent=77
+Day13StageKFP32Smoke=PASS
+```
+
+三个 continuation 都结构合法但明显重复，分别围绕 `the sun`、`the system` 和 `a cup of tea` 循环。smoke 证明工程链路，不作为质量通过证据。
+
+### Stage L：FP16 smoke 与内存恢复
+
+第一次 FP16 preflight：
+
+```text
+MemAvailableKiB=2090456
+MinimumMemAvailableKiB=2097152
+ShortfallApproxMiB=9
+PreFP16Failures=INSUFFICIENT_PRE_FP16_MEMORY
+GenerationAttempted=False
+```
+
+诊断显示 idle `update-manager` RSS 为 226,056 KiB。确认没有 active package mutator 后，只对该 PID 正常终止；没有 force kill、package mutation、ROS mutation 或 PID 784 mutation。内存恢复到 2,220,452 KiB。
+
+正式 FP16 smoke：
+
+```text
+RunID=day13-jetson-control-fp16-20260820T184158Z
+CompletedSamples=3
+GeneratedTokens=192
+AllTokenIDsInRange=True
+AllLogitsFinite=True
+OOMCount=0
+MeanEndToEndTokensPerSecond=71.903251
+MeanDecodeTokensPerSecond=79.778462
+MaximumTemperatureC=48.062
+MaximumGR3DPercent=55
+CrossPrecisionEqualGeneratedSequenceCount=3
+CrossPrecisionBitwiseClaim=False
+Day13StageLFP16Smoke=PASS
+```
+
+### Stage M：FP32/FP16 benchmark 与 stability
+
+benchmark 协议：同一 prompt、batch 1、3 warmup、10 measured、每次 64 new tokens，warmup 不进入统计。
+
+FP32 首次 validator 错误地要求第 2 条 sample 的 `sequence_index=1`，而正式 JSONL 合同使用 0-based index。benchmark 进程本身 exit 0，原输出和 tegrastats 已冻结。没有重跑或修改 evidence；只读 recovery 按 0-based contract 验证：
+
+```text
+FP32RunID=day13-jetson-control-fp32-benchmark-20260820T190445Z
+ModelLoadSeconds=1.780663
+FirstRequestWallSeconds=1.128334
+TTFTMeanMilliseconds=11.717872
+MeanDecodeTokensPerSecond=78.719951
+MeanEndToEndTokensPerSecond=78.815526
+CUDAPeakAllocatedBytes=167121920
+CUDAPeakReservedBytes=176160768
+MaximumTemperatureC=49.187
+ReliabilityGate=PASS
+Day13StageM1FP32Benchmark=PASS
+```
+
+FP16：
+
+```text
+FP16RunID=day13-jetson-control-fp16-benchmark-20260820T190445Z
+ModelLoadSeconds=1.843020
+FirstRequestWallSeconds=1.092088
+TTFTMeanMilliseconds=12.304402
+MeanDecodeTokensPerSecond=83.787412
+MeanEndToEndTokensPerSecond=83.746914
+FP16VsFP32DecodeSpeedupPercent=6.437327
+FP16VsFP32EndToEndSpeedupPercent=6.256873
+CUDAPeakAllocatedBytes=88706048
+CUDAPeakReservedBytes=113246208
+MaximumTemperatureC=47.062
+ReliabilityGate=PASS
+Day13StageM2FP16Benchmark=PASS
+```
+
+稳定性：
+
+```text
+RunID=day13-jetson-control-stability-20260820T190445Z
+SequentialRequests=10
+ConcurrentRequests=1
+CompletedRequests=10
+FailedRequests=0
+GeneratedTokens=640
+OOMCount=0
+NonFiniteCount=0
+MeanDecodeTokensPerSecond=82.815297
+MeanEndToEndTokensPerSecond=80.661543
+CUDAPostRequestAllocatedDeltaBytes=0
+CUDAPostRequestReservedDeltaBytes=0
+NoObservedMonotonicUnboundedAllocatorGrowth=True
+MaximumTemperatureC=46.781
+Day13StageM3Stability=PASS
+```
+
+所有性能结论限定为 `SAME_DEVICE_DESCRIPTIVE`。当前 `KVCacheImplemented=False`，解码是 full-prefix recompute。
+
+### Stage N：Evidence archive 与 Windows 独立复核
+
+Jetson evidence package 收集 runtime、load-only、FP32/FP16 smoke、两种 benchmark、stability、tegrastats、内部 hashes 与两条失败记录，不含 checkpoint、Tokenizer binary、Git bundle、secret 或网络地址。
+
+```text
+Filename=small-gpt-day13-jetson-evidence-4c946adf-20260820T190445Z.zip
+Bytes=43975
+SHA256=19e0e42454eb5a9e8329a014e112a4347dcaefc1ba7ab6005b9aad71c5357d0e
+FileEntryCount=29
+DirectoryEntryCount=0
+UncompressedBytes=184212
+CRCValid=True
+InternalManifestRowCount=28
+InternalHashesValid=True
+```
+
+Windows 保存路径：
+
+```text
+D:\model-backups\small-gpt\day13\evidence\small-gpt-day13-jetson-evidence-4c946adf-20260820T190445Z.zip
+```
+
+独立验证：
+
+```text
+OuterTransferIdentity=PASS
+DuplicateEntryCount=0
+UnsafeEntryCount=0
+SymlinkEntryCount=0
+EncryptedEntryCount=0
+BadCRCEntry=NONE
+InternalHashMismatchCount=0
+FrozenIdentityMismatchCount=0
+JSONParseFailureCount=0
+JSONLParseFailureCount=0
+SecretPatternFindingCount=0
+SemanticIdentityValidation=PASS
+Day13StageN=PASS
+```
+
+Jetson 原 archive 在传输前后稳定，推理与 `tegrastats` 进程均为 0。未删除 Jetson 文件，未关机。
+
+### Stage O：文档与最终 Git 闭环
+
+文档修改前 gate：
+
+```text
+FunctionalHead=4c946adffc0e5ee24b1377662819491a86c40aa5
+LocalTrackingRemoteIdentity=True
+WorktreeEntries=0
+FunctionalFilesExact=True
+Day13ReportTrackedBefore=False
+Day13ReportExistsBefore=False
+EvidenceArchiveIdentity=PASS
+PlannedDocumentationFiles=README.md,reports/daily-log.md,reports/day-13-jetson-deployment-report.md
+MutationAttempted=False
+Day13StageO1DocumentationPreMutationGate=PASS
+```
+
+文档闭环只允许这三份文件。功能代码、protocol、tests、Baseline、Day 12 artifacts、formal test 和 Jetson 都不得在 Stage O 发生变化。
+
+final docs commit 的 SHA 由包含本日志的提交创建后才能得到，不能在提交内容中自引用。最终状态必须由提交后的三方 Git gate 记录；只有 local、tracking、remote 相同、worktree clean、提交 parent 为 `4c946adf` 且 exact three docs 时，才允许输出：
+
+```text
+Day13StageODocumentationGate=PASS
+Day13StageOFinalGitClosure=PASS
+Day13Progress=100%
+Day13Status=COMPLETE
+```
+
+### Day 13 技术结论
+
+Control checkpoint 已在 Jetson Orin Nano Super 8GB 上完成真实 FP32/FP16 CUDA 推理、同设备 benchmark 与十请求稳定性。当前实现的优势是 artifact、runtime、source 和 evidence 身份可审计；局限是 full-prefix recompute、无 KV Cache/TensorRT/INT8，以及 base LM 的明显重复与弱 instruction following。
+
+Day 14 应优先把 KV Cache 作为新的单变量部署优化，重新冻结 protocol、输出目录和测量方法。若继续 TensorRT、量化、功耗模式或机器人集成，必须分别建立新授权与安全边界，不能覆盖 Day 13 evidence。

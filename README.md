@@ -8,8 +8,8 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 当前阶段 | Day 12 Dropout 0.1 单变量消融已完成；Control 在 frozen validation/test 上更优，保留 `dropout=0.0` |
-| 自动测试 | Day 12 功能提交 `e66a2bc`：本地与云端均为 `657 passed` |
+| 当前阶段 | Day 13 已在 Jetson Orin Nano Super 8GB 完成 Control 模型的原生 PyTorch FP32/FP16 推理、benchmark、稳定性与 evidence 闭环 |
+| 自动测试 | Day 13 功能提交 `4c946adf`：本地完整回归 `712 passed`，其中新增 55 个部署测试 |
 | 数据集 | `HuggingFaceFW/fineweb-edu` / `sample-10BT` |
 | 数据访问方式 | 固定 revision、14 个显式 Parquet 源文件、经过 bytes/SHA 验证的可恢复本地 cache |
 | 数据管线 | 支持清洗、去重、划分、分片、恢复与完整性校验 |
@@ -37,6 +37,13 @@
 | Day 12 Treatment validation | 完整 457 batches / 3,741,184 tokens；loss 3.893883 / perplexity 49.101172 |
 | Day 12 Treatment test | 一次性完整 430 batches / 3,517,952 tokens；loss 3.905328 / perplexity 49.666353 |
 | Day 12 消融结论 | Control 在 9/9 training validation、frozen validation 和 test 上更优；生成无明确 Treatment 改善 |
+| Day 13 目标设备 | NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super；8GB 统一内存；MAXN_SUPER 未改动 |
+| Day 13 runtime | Ubuntu 22.04.5 / L4T R36.4.3 / Python 3.10.12 / PyTorch 2.5.0a0+nv24.08 / CUDA 12.6 |
+| Day 13 model-only load | Control checkpoint strict load；33,833,984 参数；missing/unexpected keys 均为 0；CUDA logits finite |
+| Day 13 smoke | FP32 与 FP16 均为 3/3 prompts、192 generated tokens、0 OOM、0 nonfinite |
+| Day 13 benchmark | 同设备 FP32 78.82 end-to-end tok/s；FP16 83.75 tok/s；仅作当前设备描述性比较 |
+| Day 13 stability | FP16 10/10 串行请求、640 tokens；未观察到 allocator 单调无界增长；最高 46.781°C |
+| Day 13 evidence | 43,975-byte ZIP，SHA-256 `19e0e42454eb5a9e8329a014e112a4347dcaefc1ba7ab6005b9aad71c5357d0e`，Windows 独立复核通过 |
 | Git 分支 | `main` |
 
 > FineWeb-Edu 的 `provided_token_count` 使用上游 Tokenizer 口径，只用于语料采集预算。当前项目 BPE 在全 Pilot 上产生 2,129,776 个模型 token，比 2,000,083 个 provided tokens 高约 6.48%。后续训练预算以项目 Tokenizer 的实际 token 数为准。
@@ -459,6 +466,42 @@ StatisticalScope=DESCRIPTIVE_SINGLE_SEED
 
 Treatment final checkpoint、metrics、full validation、one-shot test、generation suite 和 comparison package 均已保存并通过本地 SHA 验证。F14、E85 均已关机但未释放。完整合同、迁移、指标、生成对齐、证据哈希和踩坑见 [Day 12 Dropout 0.1 单变量消融执行报告](reports/day-12-dropout-ablation-report.md)。
 
+## Day 13 Jetson Orin Nano Super 推理部署结果
+
+Day 13 将 Day 10 冻结的 Control checkpoint 部署到一块真实 Jetson Orin Nano Super 8GB。部署使用功能提交 `4c946adffc0e5ee24b1377662819491a86c40aa5`、协议 `day13-jetson-pytorch-inference-v1` 和设备已有的 NVIDIA aarch64 PyTorch CUDA runtime。没有使用 Day 12 Treatment，没有训练、恢复 optimizer/scheduler 或写 checkpoint。
+
+冻结身份：
+
+| 项目 | 值 |
+| --- | --- |
+| Control checkpoint | 406,108,827 bytes；SHA-256 `a39f8378ebe4012afb992be451d355e814b856ffb5e690ac011758f9db614b51` |
+| Baseline config | 1,258 bytes；SHA-256 `ca8524c425e1e5e3a600de5773f9a526ef3674741040635bee91fe31f4b24c0e` |
+| Tokenizer | 1,137,073 bytes；SHA-256 `b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5` |
+| Device | NVIDIA Jetson Orin Nano Engineering Reference Developer Kit Super |
+| Platform | Ubuntu 22.04.5 LTS / Jetson Linux R36.4.3 / `aarch64` |
+| Runtime | Python 3.10.12 / PyTorch `2.5.0a0+872d972e41.nv24.08` / CUDA 12.6 / cuDNN 90600 |
+| Power mode | `MAXN_SUPER`，未修改；`jetson_clocks` 未执行 |
+
+model-only load 在 `cuda:0` 上 strict 通过：33,833,984 参数、`missing_keys=0`、`unexpected_keys=0`，输入 `[1,4]` 得到 finite 的 `[1,4,16384]` FP32 logits。FP32 与 FP16 smoke 各完成 3 个固定 prompt、192 个新 tokens，无 OOM 或 nonfinite。
+
+冻结 benchmark 使用同一 `The solar system` prompt、3 次 warmup 和 10 次 measured requests，每次 64 new tokens：
+
+| 指标 | FP32 | FP16 |
+| --- | ---: | ---: |
+| Mean decode tok/s | 78.719951 | 83.787412 |
+| Mean end-to-end tok/s | 78.815526 | 83.746914 |
+| TTFT mean | 11.717872 ms | 12.304402 ms |
+| Model load | 1.780663 s | 1.843020 s |
+| CUDA peak allocated | 167,121,920 bytes | 88,706,048 bytes |
+| CUDA peak reserved | 176,160,768 bytes | 113,246,208 bytes |
+| Maximum temperature | 49.187°C | 47.062°C |
+
+在这一次同设备测试中，FP16 mean end-to-end throughput 比 FP32 高 `6.257%`，peak allocated 低 `46.921%`；但 FP16 model load 与 TTFT 并未更快，因此不作“FP16 总是更快”的通用声明。FP16 稳定性为 10/10 串行请求、640 tokens、0 OOM、0 nonfinite，PyTorch allocator 的 request-to-request allocated/reserved delta 均为 0。
+
+当前解码仍是 full-prefix recompute：`KVCacheImplemented=False`、`TensorRTImplemented=False`、`INT8Implemented=False`。三个 greedy continuation 都存在明显重复；部署通过只证明 checkpoint-to-text 工程链路成立，不证明模型已是聊天助手或可可靠控制机器人。
+
+Jetson evidence archive 为 43,975 bytes，SHA-256 为 `19e0e42454eb5a9e8329a014e112a4347dcaefc1ba7ab6005b9aad71c5357d0e`。29 个文件通过 Windows 外层 SHA、ZIP CRC、内部 hash、JSON/JSONL、路径安全和语义身份独立复核；archive 不包含 checkpoint、Tokenizer binary、Git bundle、凭据或局域网地址。完整协议、性能、温度、内存、故障恢复和边界见 [Day 13 Jetson Orin Nano Super 推理部署执行报告](reports/day-13-jetson-deployment-report.md)。
+
 ## 数据管线能力
 
 `scripts/build_fineweb_edu_corpus.py` 已实现：
@@ -682,6 +725,7 @@ python scripts/run_generation_suite.py `
 - `configs/day11_generation_protocol.json`：Day 11/12 共用的固定 prompts、seed、64-token 上限和五种解码角色；
 - `configs/ablation_dropout_01.yaml`：Day 12 Treatment 配置，相对 Baseline 只把 `model.dropout` 从 `0.0` 改为 `0.1`；
 - `configs/day12_ablation_contract.json`：冻结单变量、held constants、训练预算、评估协议和统计边界。
+- `configs/day13_jetson_deployment_protocol.json`：冻结 Jetson artifact/runtime 身份、FP32/FP16 smoke、benchmark、stability 和安全边界。
 
 ## 本地验证
 
@@ -691,6 +735,22 @@ python scripts/run_generation_suite.py `
 python .\scripts\check_env.py
 python .\scripts\check_config.py
 python -m pytest -q
+```
+
+Day 13 功能提交 `4c946adf` 的本地完整测试结果：
+
+```text
+712 passed in 53.33s
+OriginalTests=657
+Day13Tests=55
+Exit code: 0
+```
+
+Day 13 定向测试结果：
+
+```text
+55 passed in 1.75s
+Exit code: 0
 ```
 
 Day 12 功能提交的本地完整测试结果：
@@ -751,6 +811,7 @@ Day 10 没有修改训练源码或冻结配置；正式 run 使用 `07c22a4`。�
 - greedy/sample、temperature、top-k、top-p、独立 RNG、EOS 与 context crop；
 - generation protocol schema/fingerprint、单次 artifact load、ordered JSONL 与失败不发布。
 - Day 12 ablation contract 唯一差异、held constants、参数量、token budget、generation protocol 和错误拒绝路径。
+- Day 13 Jetson deployment protocol、dry-run/load-only、strict artifact identity、FP32/FP16 smoke、benchmark/stability 输出与禁止训练路径。
 
 ## 项目结构
 
@@ -762,6 +823,7 @@ small-gpt/
 │   ├── data_fineweb_edu.yaml
 │   ├── day11_generation_protocol.json
 │   ├── day12_ablation_contract.json
+│   ├── day13_jetson_deployment_protocol.json
 │   ├── debug.yaml
 │   ├── tokenizer.yaml
 │   ├── tokenized_data.yaml
@@ -805,13 +867,16 @@ small-gpt/
 │   ├── day-09-full-data-report.md
 │   ├── day-10-pretraining-report.md
 │   ├── day-11-evaluation-generation-report.md
-│   └── day-12-dropout-ablation-report.md
+│   ├── day-12-dropout-ablation-report.md
+│   └── day-13-jetson-deployment-report.md
 ├── scripts/
+│   ├── benchmark_jetson_inference.py
 │   ├── build_fineweb_edu_corpus.py
 │   ├── check_checkpoint_resume.py
 │   ├── check_ablation_contract.py
 │   ├── check_config.py
 │   ├── check_env.py
+│   ├── check_jetson_deployment.py
 │   ├── check_training_config.py
 │   ├── check_training_core.py
 │   ├── check_training_pipeline.py
@@ -834,6 +899,7 @@ small-gpt/
 │   ├── test_binary_format.py
 │   ├── test_checkpoint.py
 │   ├── test_config.py
+│   ├── test_day13_jetson_deployment.py
 │   ├── test_data_config.py
 │   ├── test_data_pipeline.py
 │   ├── test_data_stream.py
@@ -902,6 +968,7 @@ small-gpt/
 - [x] Day 10：完成 4,578 updates / 300,023,808 tokens 正式预训练与 checkpoint/metrics 归档
 - [x] Day 11：完成 strict checkpoint 推理加载、完整 frozen validation/test 与固定生成协议
 - [x] Day 12：完成 Dropout 0.1 单变量训练、完整评估、生成对比与证据归档；保留 Control
+- [x] Day 13：在 Jetson Orin Nano Super 8GB 完成 Control 的 FP32/FP16 推理、benchmark、稳定性与 evidence 独立复核
 - [x] 完成至少一个消融实验
 
 ## 文档
@@ -927,11 +994,12 @@ small-gpt/
 - [Day 10 300M-token 正式预训练执行报告](reports/day-10-pretraining-report.md)
 - [Day 11 Frozen Evaluation 与文本生成执行报告](reports/day-11-evaluation-generation-report.md)
 - [Day 12 Dropout 0.1 单变量消融执行报告](reports/day-12-dropout-ablation-report.md)
+- [Day 13 Jetson Orin Nano Super 推理部署执行报告](reports/day-13-jetson-deployment-report.md)
 
 ## 当前阶段
 
-Day 12 已经完成首个正式训练消融。Control 为 `dropout=0.0`，Treatment 为 `dropout=0.1`；其余训练、数据、Tokenizer、模型结构、预算、评估和生成协议全部冻结。Treatment 从随机初始化训练 4,578 updates / 300,023,808 tokens，没有 resume Baseline。
+Day 13 已把保留的 `dropout=0.0` Control 部署到 NVIDIA Jetson Orin Nano Super 8GB。原生 PyTorch CUDA runtime 完成 strict model-only load，FP32/FP16 smoke、同设备 benchmark 与 FP16 10-request stability 均通过；没有训练、checkpoint 写入、功耗模式变更或 `jetson_clocks`。
 
-Control 在 9/9 training validation 节点、完整 frozen validation 和一次性 frozen test 上都更优。Treatment frozen validation 为 `loss=3.893883 / perplexity=49.101172`，test 为 `loss=3.905328 / perplexity=49.666353`，均差于 Control。固定 30 对生成样本没有显示 Treatment 的明确总体改善，两组 greedy 都持续循环。
+当前 full-prefix-recompute 实现的冻结 benchmark 为 FP32 `78.815526` end-to-end tok/s、FP16 `83.746914` tok/s。FP16 在本次同设备 run 中 mean end-to-end 快 `6.257%`、CUDA peak allocated 低 `46.921%`，但 model load 和 TTFT 没有同步改善。这些数字只描述当前设备与协议，不是跨设备或通用性能承诺。
 
-因此项目保留 Baseline `dropout=0.0`。该结论只适用于当前单 seed、34M 参数与固定 300M-token 预算，不声明统计显著性。Treatment checkpoint、metrics、evaluation、generation 和 comparison evidence 已完成下载与本地 SHA 验证；F14、E85 都已关机但未释放。Day 12 的执行证据与仓库报告已经收口，下一阶段是整理项目级复现总结，不需要继续占用云端 GPU。
+Evidence archive 已传回 Windows 并通过外层 SHA、CRC、内部 hash、JSON/JSONL、路径安全和身份语义独立复核。当前仍没有 KV Cache、TensorRT、INT8、并发服务或可靠机器人控制接口；三个 greedy smoke 输出仍明显重复。下一阶段应优先将 KV Cache 作为新的单变量部署优化，并用独立协议重新测量。
