@@ -1,0 +1,126 @@
+{
+  "format_name": "small_gpt_jetson_deployment_protocol",
+  "schema_version": 1,
+  "protocol_id": "day13-jetson-pytorch-inference-v1",
+  "status": "frozen_after_user_approval",
+  "starting_repository_head": "0319f80766991eead65556df564497036605d1a3",
+  "functional_source_mode": "runtime_clean_git_head",
+  "model_role": "control",
+  "control_run_id": "baseline-full-300m-20260813-232952",
+  "config": {
+    "path": "configs/baseline.yaml",
+    "bytes": 1258,
+    "sha256": "ca8524c425e1e5e3a600de5773f9a526ef3674741040635bee91fe31f4b24c0e"
+  },
+  "checkpoint": {
+    "bytes": 406108827,
+    "sha256": "a39f8378ebe4012afb992be451d355e814b856ffb5e690ac011758f9db614b51",
+    "load_mode": "model_only"
+  },
+  "tokenizer": {
+    "bytes": 1137073,
+    "sha256": "b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5",
+    "vocab_size": 16384,
+    "special_token_ids": {
+      "bos": 0,
+      "eos": 1,
+      "pad": 2,
+      "unk": 3
+    },
+    "config": {
+      "bytes": 2988,
+      "sha256": "8622711407aab3f299996b7d3009d4f4447ae35879ca8e50451b5f0adbdf5141"
+    }
+  },
+  "model": {
+    "parameters": 33833984,
+    "dropout": 0.0,
+    "context_length": 512
+  },
+  "smoke": {
+    "protocol_id": "day13-jetson-greedy-smoke-v1",
+    "batch_size": 1,
+    "max_new_tokens": 64,
+    "stop_on_eos": false,
+    "decoding": "greedy",
+    "seed": 1337,
+    "precisions": [
+      "fp32",
+      "fp16"
+    ],
+    "expected_generated_tokens_per_precision": 192,
+    "prompts": [
+      {
+        "prompt_id": "prompt_01",
+        "text": "Once upon a time"
+      },
+      {
+        "prompt_id": "prompt_02",
+        "text": "The solar system"
+      },
+      {
+        "prompt_id": "prompt_03",
+        "text": "To make a cup of tea"
+      }
+    ]
+  },
+  "benchmark": {
+    "protocol_id": "day13-jetson-benchmark-v1",
+    "prompt_id": "prompt_02",
+    "batch_size": 1,
+    "warmup_runs": 3,
+    "measured_runs": 10,
+    "max_new_tokens": 64,
+    "stop_on_eos": false,
+    "decoding": "greedy",
+    "synchronize_cuda": true,
+    "reset_peak_memory_before_run": true,
+    "summary_statistics": [
+      "mean",
+      "median",
+      "min",
+      "max",
+      "p95"
+    ]
+  },
+  "stability": {
+    "protocol_id": "day13-jetson-stability-v1",
+    "prompt_id": "prompt_02",
+    "batch_size": 1,
+    "sequential_requests": 10,
+    "max_new_tokens": 64,
+    "stop_on_eos": false,
+    "decoding": "greedy",
+    "concurrent_requests": 1,
+    "expected_total_generated_tokens": 640
+  },
+  "runtime": {
+    "route": "native_existing",
+    "jetson_linux_version": "36.4.3",
+    "python_version": "3.10.12",
+    "torch_version": "2.5.0a0+872d972e41.nv24.08",
+    "torch_cuda_version": "12.6",
+    "torch_cudnn_version": 90600,
+    "runtime_identity_sha256": "44b65f0ac7be423affd46a4a0f80299c49a69ccd7f49385809ba3d5762d3ad40",
+    "tokenizers_version": "0.23.1",
+    "tokenizers_wheel": {
+      "filename": "tokenizers-0.23.1-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl",
+      "bytes": 3374081,
+      "sha256": "1bf13402aff9bc533c89cb849ec3b412dc3fbeacc9744840e423d7bf3f7dc0e3"
+    },
+    "tensor_rt_enabled": false
+  },
+  "implementation": {
+    "kv_cache_enabled": false,
+    "decode_implementation": "full_prefix_recompute",
+    "fp16_mode": "float16_weights_and_ops"
+  },
+  "safety": {
+    "formal_test_access": false,
+    "overwrite_outputs": false,
+    "training_allowed": false,
+    "cross_machine_bitwise_claim": false,
+    "power_mode_change_allowed": false,
+    "jetson_clocks_allowed": false
+  }
+}
