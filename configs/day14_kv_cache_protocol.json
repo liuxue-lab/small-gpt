@@ -1,6 +1,7 @@
 {
   "adoption_gates": {
     "below_threshold_result": "OptimizationAdoption=NOT_SUPPORTED",
+    "correctness_contract": "day14-kv-cache-v2",
     "correctness_gate": "PASS",
     "long_decode_speedup_minimum": 1.1,
     "medium_decode_speedup_minimum": 1.1,
@@ -30,9 +31,10 @@
   },
   "approval": {
     "approval_date": "2026-08-21",
-    "approval_text": "批准 Day14 KV Cache v1 协议",
+    "approval_scope": "post_failure_protocol_revision_and_full_functional_chain_rebuild",
+    "approval_text": "批准 Day14 KV Cache v2 协议修订并按全新功能链重建",
     "approved_by": "user",
-    "revision_policy": "Any change to prompt lengths, tolerances, measured pair count, timing definitions, cache semantics, context policy, or primary metrics requires a new protocol revision."
+    "revision_policy": "Any change to prompt lengths, numerical hard gates, measured pair count, timing definitions, cache semantics, context policy, or primary metrics requires a new protocol revision."
   },
   "architecture": {
     "activation": "gelu_tanh",
@@ -57,6 +59,7 @@
     "batch_size": 1,
     "bridge_is_historical_only": true,
     "cached_strategy": "kv_cache",
+    "correctness_prerequisite_protocol_id": "day14-kv-cache-v2",
     "cuda_synchronize_before_and_after_timing": true,
     "decoding": "greedy",
     "empty_cache_between_requests": false,
@@ -74,7 +77,7 @@
       "medium",
       "long"
     ],
-    "protocol_id": "day14-kv-cache-paired-benchmark-v1",
+    "protocol_id": "day14-kv-cache-paired-benchmark-v2",
     "record_actual_order": true,
     "reference_strategy": "full_prefix_recompute",
     "reset_peak_memory_before_each_request": true,
@@ -181,8 +184,35 @@
       "record_first_divergence": true
     },
     "jetson_fp16": {
-      "atol": 0.01,
-      "rtol": 0.01
+      "comparison_position_count": 64,
+      "contract_id": "jetson_fp16_decision_and_bounded_drift_v2",
+      "hard_gates": {
+        "all_argmax_exact_match_required": true,
+        "all_logits_finite_required": true,
+        "context_boundaries_pass_required": true,
+        "generated_length_exact_match_required": true,
+        "generated_token_ids_exact_match_required": true,
+        "maximum_absolute_error_lte": 0.05,
+        "mean_absolute_error_lte": 0.005,
+        "minimum_top5_token_set_overlap": 5,
+        "nonfinite_count_lte": 0,
+        "oom_count_lte": 0,
+        "parameter_count_stable_required": true,
+        "state_dict_key_set_stable_required": true
+      },
+      "legacy_elementwise_allclose": {
+        "atol": 0.01,
+        "controls_pass": false,
+        "required_report": true,
+        "role": "descriptive_only",
+        "rtol": 0.01
+      },
+      "scenario": "short",
+      "threshold_selection": {
+        "frozen_before_any_v2_execution": true,
+        "must_not_change_after_v2_failure": true,
+        "selected_after_v1_failure_evidence": true
+      }
     },
     "jetson_fp32": {
       "atol": 1e-05,
@@ -198,6 +228,7 @@
       "strict_checkpoint_load": true,
       "unexpected_keys": 0
     },
+    "protocol_revision_after_v1_failure": true,
     "required_reports": [
       "max_absolute_error",
       "mean_absolute_error",
@@ -206,9 +237,23 @@
       "cached_argmax",
       "top5_token_set_overlap",
       "finite_count",
-      "comparison_position_count"
+      "comparison_position_count",
+      "legacy_elementwise_allclose_position_count",
+      "hard_gate_results"
     ],
     "tolerance_may_be_relaxed_after_failure": false
+  },
+  "deployment_namespace": {
+    "checkpoint_copy_allowed": false,
+    "checkpoint_link_allowed": false,
+    "checkpoint_reuse_mode": "read_only_existing_day13_path",
+    "jetson_deploy_root": "/home/jetson/small-gpt-day14-v2",
+    "jetson_incoming_pattern": "/home/jetson/small-gpt-day14-v2-incoming-<functional_short_sha>",
+    "legacy_v1_deploy_root": "/home/jetson/small-gpt-day14",
+    "legacy_v1_incoming_root": "/home/jetson/small-gpt-day14-incoming-74ff2619",
+    "legacy_v1_mutation_allowed": false,
+    "new_deploy_must_be_absent_before_build": true,
+    "windows_package_root": "D:/model-backups/small-gpt/day14-v2/packages"
   },
   "evidence_policy": {
     "exclude": [
@@ -310,12 +355,30 @@
       "train/**",
       "tokenizer/**"
     ],
+    "frozen_unchanged_model_files": [
+      {
+        "bytes": 488,
+        "path": "model/__init__.py",
+        "sha256": "5534ef08073378a3d7120115b428d7fe8483489dc6f1d40fb0fb4164982318b5"
+      },
+      {
+        "bytes": 11449,
+        "path": "model/attention.py",
+        "sha256": "65a49c0572985fd8ec3a4d1dd7847804a252e643f9a2ac38facb40e720f87799"
+      },
+      {
+        "bytes": 3366,
+        "path": "model/block.py",
+        "sha256": "eb33b79658397ac365099bf9f287990a953cfecc6d727f07203500702917f00c"
+      },
+      {
+        "bytes": 13171,
+        "path": "model/gpt.py",
+        "sha256": "b1eb918f7afddb5b7e945ff6ca7fa9af27d884a1c28f14023c6f33aa08fe88ef"
+      }
+    ],
     "functional_files": [
       "configs/day14_kv_cache_protocol.json",
-      "model/__init__.py",
-      "model/attention.py",
-      "model/block.py",
-      "model/gpt.py",
       "scripts/check_day14_kv_cache.py",
       "scripts/benchmark_day14_kv_cache.py",
       "tests/test_day14_kv_cache.py"
@@ -327,8 +390,11 @@
       "comparisons.jsonl"
     ],
     "failure_record_retained": true,
+    "legacy_v1_failure_records_required": 2,
+    "legacy_v1_outputs_read_only": true,
     "manifest_published_last": true,
     "ntp_synchronized_required": true,
+    "output_namespace": "day14-v2",
     "overwrite_allowed": false,
     "success_files": [
       "manifest.json",
@@ -336,7 +402,8 @@
       "benchmark-summary.json",
       "tegrastats.log"
     ],
-    "unique_utc_run_id_required": true
+    "unique_utc_run_id_required": true,
+    "v2_correctness_run_must_use_new_utc_id": true
   },
   "prompt_builder": {
     "add_bos": false,
@@ -408,7 +475,102 @@
     "tokenizer_sha256": "b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5",
     "truncate_to_exact_target": true
   },
-  "protocol_id": "day14-kv-cache-v1",
+  "protocol_id": "day14-kv-cache-v2",
+  "revision": {
+    "changed_contracts": [
+      "jetson_fp16_correctness_decision_rule",
+      "protocol_identity",
+      "benchmark_and_stability_protocol_ids",
+      "output_namespace"
+    ],
+    "prior_evidence": {
+      "k2_fp32_model_only_load": {
+        "bytes": 2373,
+        "gate": "PASS",
+        "relative_path": "stage-k2-fp32-load-only.json",
+        "sha256": "f0a68265600f15a9cf7e0ee2c01861d164821772ade15bd61cf18ae1fe4c7905"
+      },
+      "k3_fp32_correctness": {
+        "comparisons": {
+          "bytes": 37371,
+          "sha256": "3e023e89d087406b2b588a3c1835d7070bf0cb1a221a880bc5f416e7d9492339"
+        },
+        "gate": "PASS",
+        "protocol_id": "day14-kv-cache-v1",
+        "run_id": "day14-jetson-kv-cache-correctness-20260821T152118Z",
+        "summary": {
+          "bytes": 5352,
+          "sha256": "2dbf4cb5d0fdff9ce82663f17a8bd8366e5caab65cf57807e84d281f13223b2a"
+        }
+      },
+      "k4_fp16_failure_v1": {
+        "attempt_label": "K4_V1_ORIGINAL",
+        "failure_record": {
+          "bytes": 505,
+          "sha256": "a9217a323beb3087f20f7af90256fa74c19e634579554a73bc4c3741575980bb"
+        },
+        "protocol_id": "day14-kv-cache-v1",
+        "run_id": "day14-jetson-kv-cache-correctness-20260821T153300Z"
+      },
+      "k4_fp16_failure_v2": {
+        "attempt_label": "K4_V2_FULL_PRECISION_REDUCTION_RECOVERY",
+        "failure_record": {
+          "bytes": 505,
+          "sha256": "802e1174a7cfb7caf4c1120de5bfff8bec4559d8c58b24d6fd2751a7f0de02cf"
+        },
+        "protocol_id": "day14-kv-cache-v1",
+        "run_id": "day14-jetson-kv-cache-correctness-20260821T155038Z"
+      }
+    },
+    "prior_protocol": {
+      "bytes": 16134,
+      "canonical_fingerprint": "ef001e304d9b9be246829276f36f26387d6ddf362081e0f31ace118882d8d06f",
+      "path": "configs/day14_kv_cache_protocol.json",
+      "sha256": "fe676b127c7bd0e08d920816dce547037669065d8aad721cc17dad0569b08b1c"
+    },
+    "reason": "Jetson FP16 reference full-prefix and KV-cache paths preserved exact greedy decisions, argmax, top-5 sets, finite logits, cache lengths, and context boundaries, but the v1 elementwise allclose hard gate failed because of shape-dependent FP16 numerical drift.",
+    "revision_id": "day14-kv-cache-v2",
+    "revision_kind": "post_failure_numeric_contract_revision",
+    "scientific_disclosure": {
+      "post_hoc_relative_to_v1": true,
+      "preregistered_before_any_v2_correctness_execution": true,
+      "v1_correctness_claimed_pass": false,
+      "v1_failure_record_count": 2,
+      "v1_failure_records_retained": true,
+      "v1_tolerance_changed": false,
+      "v2_must_not_be_reported_as_v1_pass": true,
+      "v2_threshold_relaxation_after_first_v2_execution_allowed": false
+    },
+    "supersedes_functional_commit": "74ff2619a6b20bb243d3e67c3bbb6a79a4cd54e3",
+    "supersedes_protocol_id": "day14-kv-cache-v1",
+    "unchanged_contracts": [
+      "architecture",
+      "api_route",
+      "cache_contract",
+      "context_policy",
+      "prompt_builder",
+      "timing_and_metrics",
+      "memory_and_thermal",
+      "safety"
+    ],
+    "v1_observed_diagnostics": {
+      "all_argmax_exact_match": true,
+      "all_logits_finite": true,
+      "comparison_position_count": 64,
+      "context_boundaries_pass": true,
+      "failing_elementwise_allclose_position_count": 43,
+      "generated_token_ids_exact_match": true,
+      "maximum_absolute_error": 0.0390625,
+      "maximum_error_index": {
+        "sequence_index": 60,
+        "token_id": 6179
+      },
+      "mean_absolute_error": 0.0029780296463286504,
+      "minimum_top5_token_set_overlap": 5,
+      "precision": "fp16",
+      "scenario": "short"
+    }
+  },
   "safety": {
     "backward_allowed": false,
     "checkpoint_write_allowed": false,
@@ -424,7 +586,7 @@
     "torch_compile_allowed": false,
     "training_allowed": false
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "source": {
     "day13_final_head": "6ef391625a091fc652ea85478d1e72abdb1bb56e",
     "day13_final_parent": "4c946adffc0e5ee24b1377662819491a86c40aa5",
@@ -432,7 +594,13 @@
     "remote_url": "https://github.com/liuxue-lab/small-gpt.git",
     "repository": "liuxue-lab/small-gpt",
     "required_branch": "main",
-    "source_gate": "Day14StageA1GitGate=PASS"
+    "source_gate": "Day14StageA1GitGate=PASS",
+    "v1_functional_head": "74ff2619a6b20bb243d3e67c3bbb6a79a4cd54e3",
+    "v1_functional_parent": "6ef391625a091fc652ea85478d1e72abdb1bb56e",
+    "v1_functional_subject": "feat: add verified KV-cache inference",
+    "v1_functional_tree": "5fec3e4ec06b5578aa3066066cc5cea90a1dc6fb",
+    "v2_functional_head_recorded_after_commit": true,
+    "v2_history_policy": "new_commit_only_no_amend_no_force_push"
   },
   "stability": {
     "all_token_ids_in_range_required": true,
@@ -446,13 +614,14 @@
     "completed_requests_required": 30,
     "concurrent_requests": 1,
     "context_overflow_count_allowed": 0,
+    "correctness_prerequisite_protocol_id": "day14-kv-cache-v2",
     "decode_strategy": "kv_cache",
     "failed_requests_allowed": 0,
     "new_empty_cache_per_request": true,
     "nonfinite_count_allowed": 0,
     "oom_count_allowed": 0,
     "precision": "fp16",
-    "protocol_id": "day14-kv-cache-fp16-stability-v1",
+    "protocol_id": "day14-kv-cache-fp16-stability-v2",
     "requests_per_scenario": 10,
     "scenario_rotation": [
       "short",

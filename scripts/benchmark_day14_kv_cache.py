@@ -766,6 +766,104 @@ def compare_generation_traces(
     }
 
 
+def _evaluate_decision_contract(
+    *,
+    contract: Mapping[str, Any],
+    maximum_absolute_error: float,
+    mean_absolute_error: float,
+    generated_token_ids_exact_match: bool,
+    generated_length_exact_match: bool,
+    all_argmax_exact_match: bool,
+    minimum_top5_token_set_overlap: int,
+    all_logits_finite: bool,
+    nonfinite_count: int,
+    parameter_count_stable: bool,
+    state_dict_key_set_stable: bool,
+    context_boundaries_pass: bool | None,
+    oom_count: int,
+) -> tuple[str, dict[str, bool]]:
+    """Evaluate the frozen v2 FP16 contract without changing its thresholds."""
+
+    contract_id = contract.get("contract_id")
+    if not isinstance(contract_id, str) or not contract_id:
+        raise GenerationError("decision contract ID is missing")
+    hard_gates = contract.get("hard_gates")
+    if not isinstance(hard_gates, Mapping):
+        raise GenerationError("decision contract hard_gates must be a mapping")
+    expected_keys = {
+        "all_argmax_exact_match_required",
+        "all_logits_finite_required",
+        "context_boundaries_pass_required",
+        "generated_length_exact_match_required",
+        "generated_token_ids_exact_match_required",
+        "maximum_absolute_error_lte",
+        "mean_absolute_error_lte",
+        "minimum_top5_token_set_overlap",
+        "nonfinite_count_lte",
+        "oom_count_lte",
+        "parameter_count_stable_required",
+        "state_dict_key_set_stable_required",
+    }
+    if set(hard_gates) != expected_keys:
+        raise GenerationError("decision contract hard-gate key set changed")
+    for key in (
+        "all_argmax_exact_match_required",
+        "all_logits_finite_required",
+        "context_boundaries_pass_required",
+        "generated_length_exact_match_required",
+        "generated_token_ids_exact_match_required",
+        "parameter_count_stable_required",
+        "state_dict_key_set_stable_required",
+    ):
+        if hard_gates[key] is not True:
+            raise GenerationError(f"decision contract {key} must be true")
+    for key in (
+        "maximum_absolute_error_lte",
+        "mean_absolute_error_lte",
+    ):
+        value = hard_gates[key]
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            or float(value) < 0.0
+        ):
+            raise GenerationError(f"decision contract {key} is invalid")
+    for key in (
+        "minimum_top5_token_set_overlap",
+        "nonfinite_count_lte",
+        "oom_count_lte",
+    ):
+        value = hard_gates[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise GenerationError(f"decision contract {key} is invalid")
+    if context_boundaries_pass is not True:
+        raise GenerationError(
+            "v2 decision contract requires a passing context-boundary result"
+        )
+    results = {
+        "all_argmax_exact_match_required": all_argmax_exact_match,
+        "all_logits_finite_required": all_logits_finite,
+        "context_boundaries_pass_required": context_boundaries_pass,
+        "generated_length_exact_match_required": generated_length_exact_match,
+        "generated_token_ids_exact_match_required": (
+            generated_token_ids_exact_match
+        ),
+        "maximum_absolute_error_lte": maximum_absolute_error
+        <= float(hard_gates["maximum_absolute_error_lte"]),
+        "mean_absolute_error_lte": mean_absolute_error
+        <= float(hard_gates["mean_absolute_error_lte"]),
+        "minimum_top5_token_set_overlap": minimum_top5_token_set_overlap
+        >= int(hard_gates["minimum_top5_token_set_overlap"]),
+        "nonfinite_count_lte": nonfinite_count
+        <= int(hard_gates["nonfinite_count_lte"]),
+        "oom_count_lte": oom_count <= int(hard_gates["oom_count_lte"]),
+        "parameter_count_stable_required": parameter_count_stable,
+        "state_dict_key_set_stable_required": state_dict_key_set_stable,
+    }
+    return contract_id, results
+
+
 def run_stepwise_correctness(
     model: nn.Module,
     prompt_token_ids: Any,
@@ -773,6 +871,8 @@ def run_stepwise_correctness(
     max_new_tokens: int,
     rtol: float,
     atol: float,
+    decision_contract: Mapping[str, Any] | None = None,
+    context_boundaries_pass: bool | None = None,
 ) -> dict[str, Any]:
     """Compare reference and cached logits on the same absolute prefixes."""
 
@@ -793,6 +893,17 @@ def run_stepwise_correctness(
         raise GenerationError("atol must be finite")
     if float(rtol) < 0.0 or float(atol) < 0.0:
         raise GenerationError("correctness tolerances must be non-negative")
+    if decision_contract is not None:
+        expected_positions = decision_contract.get("comparison_position_count")
+        if (
+            not isinstance(expected_positions, int)
+            or isinstance(expected_positions, bool)
+            or expected_positions <= 0
+            or expected_positions != max_new_tokens
+        ):
+            raise GenerationError(
+                "decision contract comparison position count changed"
+            )
 
     parameters_before = sum(parameter.numel() for parameter in model.parameters())
     state_keys_before = tuple(model.state_dict())
@@ -808,6 +919,7 @@ def run_stepwise_correctness(
     maximum_error_token_id = -1
     mean_error_sum = 0.0
     finite_count = 0
+    nonfinite_count = 0
 
     with torch.inference_mode():
         if not torch.is_inference_mode_enabled():
@@ -874,10 +986,17 @@ def run_stepwise_correctness(
             row_mean_error = float(difference.mean().item())
             row_max_error_value = float(row_max_error.item())
             row_max_token_id = int(row_max_index.item())
-            row_finite = bool(
-                torch.isfinite(reference_logits).all().item()
-                and torch.isfinite(cached_logits).all().item()
+            reference_finite_count = int(
+                torch.isfinite(reference_logits).sum().item()
             )
+            cached_finite_count = int(
+                torch.isfinite(cached_logits).sum().item()
+            )
+            row_finite_count = reference_finite_count + cached_finite_count
+            row_nonfinite_count = (
+                2 * int(config.vocab_size) - row_finite_count
+            )
+            row_finite = row_nonfinite_count == 0
             row_within_tolerance = bool(
                 torch.allclose(
                     reference_logits.float(),
@@ -901,7 +1020,7 @@ def run_stepwise_correctness(
             top5_overlap = len(reference_top5 & cached_top5)
             row = {
                 "format_name": "small_gpt_day14_kv_cache_comparison",
-                "schema_version": 1,
+                "schema_version": 2,
                 "sequence_index": sequence_index,
                 "prefix_length": len(full_sequence),
                 "expected_cache_length": expected_cache_length,
@@ -927,7 +1046,8 @@ def run_stepwise_correctness(
                 "cached_argmax": cached_argmax,
                 "argmax_exact_match": reference_argmax == cached_argmax,
                 "top5_token_set_overlap": top5_overlap,
-                "finite_count": 2 * int(config.vocab_size),
+                "finite_count": row_finite_count,
+                "nonfinite_count": row_nonfinite_count,
                 "all_finite": row_finite,
                 "within_tolerance": row_within_tolerance,
                 "rtol": float(rtol),
@@ -940,6 +1060,7 @@ def run_stepwise_correctness(
             all_within_tolerance = all_within_tolerance and row_within_tolerance
             all_finite = all_finite and row_finite
             finite_count += row["finite_count"]
+            nonfinite_count += row["nonfinite_count"]
             mean_error_sum += row_mean_error
             if row_max_error_value > maximum_absolute_error:
                 maximum_absolute_error = row_max_error_value
@@ -949,39 +1070,90 @@ def run_stepwise_correctness(
     parameters_after = sum(parameter.numel() for parameter in model.parameters())
     state_keys_after = tuple(model.state_dict())
     sequences_match = reference_tokens == cached_tokens
+    generated_length_exact_match = (
+        len(reference_tokens) == len(cached_tokens) == max_new_tokens
+    )
     parameter_count_stable = parameters_before == parameters_after
     state_keys_stable = state_keys_before == state_keys_after
+    mean_absolute_error = mean_error_sum / len(rows)
+    all_argmax_exact_match = all(
+        row["argmax_exact_match"] for row in rows
+    )
+    minimum_top5_overlap = min(
+        row["top5_token_set_overlap"] for row in rows
+    )
+    legacy_passing_positions = sum(
+        row["within_tolerance"] is True for row in rows
+    )
+    legacy_failing_positions = len(rows) - legacy_passing_positions
+    decision_contract_id: str | None = None
+    hard_gate_results: dict[str, bool] | None = None
+    if decision_contract is not None:
+        decision_contract_id, hard_gate_results = _evaluate_decision_contract(
+            contract=decision_contract,
+            maximum_absolute_error=maximum_absolute_error,
+            mean_absolute_error=mean_absolute_error,
+            generated_token_ids_exact_match=sequences_match,
+            generated_length_exact_match=generated_length_exact_match,
+            all_argmax_exact_match=all_argmax_exact_match,
+            minimum_top5_token_set_overlap=minimum_top5_overlap,
+            all_logits_finite=all_finite,
+            nonfinite_count=nonfinite_count,
+            parameter_count_stable=parameter_count_stable,
+            state_dict_key_set_stable=state_keys_stable,
+            context_boundaries_pass=context_boundaries_pass,
+            oom_count=0,
+        )
+        overall_pass = all(hard_gate_results.values())
+    else:
+        overall_pass = (
+            sequences_match
+            and generated_length_exact_match
+            and all_finite
+            and all_within_tolerance
+            and parameter_count_stable
+            and state_keys_stable
+        )
     return {
         "comparison_position_count": len(rows),
         "generated_token_count": max_new_tokens,
         "generated_token_ids_exact_match": sequences_match,
+        "generated_length_exact_match": generated_length_exact_match,
         "reference_generated_token_ids": reference_tokens,
         "cached_generated_token_ids": cached_tokens,
         "maximum_absolute_error": maximum_absolute_error,
-        "mean_absolute_error": mean_error_sum / len(rows),
+        "mean_absolute_error": mean_absolute_error,
         "maximum_error_index": {
             "sequence_index": maximum_error_step,
             "token_id": maximum_error_token_id,
         },
         "finite_count": finite_count,
+        "nonfinite_count": nonfinite_count,
+        "oom_count": 0,
         "all_logits_finite": all_finite,
         "all_positions_within_tolerance": all_within_tolerance,
-        "all_argmax_exact_match": all(
-            row["argmax_exact_match"] for row in rows
+        "legacy_elementwise_allclose_pass": all_within_tolerance,
+        "legacy_elementwise_allclose_position_count": len(rows),
+        "legacy_elementwise_allclose_passing_position_count": (
+            legacy_passing_positions
         ),
-        "minimum_top5_token_set_overlap": min(
-            row["top5_token_set_overlap"] for row in rows
+        "legacy_elementwise_allclose_failing_position_count": (
+            legacy_failing_positions
         ),
+        "all_argmax_exact_match": all_argmax_exact_match,
+        "minimum_top5_token_set_overlap": minimum_top5_overlap,
         "parameter_count_stable": parameter_count_stable,
         "state_dict_key_set_stable": state_keys_stable,
-        "rows": rows,
-        "pass": (
-            sequences_match
-            and all_finite
-            and all_within_tolerance
-            and parameter_count_stable
-            and state_keys_stable
+        "decision_contract_id": decision_contract_id,
+        "decision_contract_applied": decision_contract is not None,
+        "decision_contract_pass": (
+            all(hard_gate_results.values())
+            if hard_gate_results is not None
+            else None
         ),
+        "hard_gate_results": hard_gate_results,
+        "rows": rows,
+        "pass": overall_pass,
     }
 
 

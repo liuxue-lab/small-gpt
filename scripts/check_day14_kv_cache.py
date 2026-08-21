@@ -29,12 +29,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 FORMAT_NAME = "small_gpt_day14_kv_cache_protocol"
-SCHEMA_VERSION = 1
-PROTOCOL_ID = "day14-kv-cache-v1"
+SCHEMA_VERSION = 2
+PROTOCOL_ID = "day14-kv-cache-v2"
 PROTOCOL_STATUS = "frozen_after_user_approval"
-EXPECTED_PROTOCOL_BYTES = 16_134
+EXPECTED_PROTOCOL_BYTES = 23_103
 EXPECTED_PROTOCOL_SHA256 = (
-    "fe676b127c7bd0e08d920816dce547037669065d8aad721cc17dad0569b08b1c"
+    "df5dcc7d7b6219033c3b5e4f4367270bee3620e2839d1b9501c03cdf16ddd484"
 )
 EXPECTED_SOURCE_HEAD = "6ef391625a091fc652ea85478d1e72abdb1bb56e"
 EXPECTED_PARAMETERS = 33_833_984
@@ -46,13 +46,39 @@ EXPECTED_CONTEXT_LENGTH = 512
 EXPECTED_VOCAB_SIZE = 16_384
 EXPECTED_FUNCTIONAL_FILES = (
     "configs/day14_kv_cache_protocol.json",
-    "model/__init__.py",
-    "model/attention.py",
-    "model/block.py",
-    "model/gpt.py",
     "scripts/check_day14_kv_cache.py",
     "scripts/benchmark_day14_kv_cache.py",
     "tests/test_day14_kv_cache.py",
+)
+EXPECTED_FROZEN_MODEL_FILES = (
+    {
+        "bytes": 488,
+        "path": "model/__init__.py",
+        "sha256": (
+            "5534ef08073378a3d7120115b428d7fe8483489dc6f1d40fb0fb4164982318b5"
+        ),
+    },
+    {
+        "bytes": 11_449,
+        "path": "model/attention.py",
+        "sha256": (
+            "65a49c0572985fd8ec3a4d1dd7847804a252e643f9a2ac38facb40e720f87799"
+        ),
+    },
+    {
+        "bytes": 3_366,
+        "path": "model/block.py",
+        "sha256": (
+            "eb33b79658397ac365099bf9f287990a953cfecc6d727f07203500702917f00c"
+        ),
+    },
+    {
+        "bytes": 13_171,
+        "path": "model/gpt.py",
+        "sha256": (
+            "b1eb918f7afddb5b7e945ff6ca7fa9af27d884a1c28f14023c6f33aa08fe88ef"
+        ),
+    },
 )
 EXPECTED_SCENARIOS = {
     "bridge": (3, 64, 67, 66),
@@ -62,7 +88,37 @@ EXPECTED_SCENARIOS = {
 }
 EXPECTED_CPU_TOLERANCE = {"rtol": 1.0e-5, "atol": 1.0e-6}
 EXPECTED_JETSON_FP32_TOLERANCE = {"rtol": 1.0e-4, "atol": 1.0e-5}
-EXPECTED_JETSON_FP16_TOLERANCE = {"rtol": 1.0e-2, "atol": 1.0e-2}
+EXPECTED_JETSON_FP16_CONTRACT = {
+    "comparison_position_count": 64,
+    "contract_id": "jetson_fp16_decision_and_bounded_drift_v2",
+    "hard_gates": {
+        "all_argmax_exact_match_required": True,
+        "all_logits_finite_required": True,
+        "context_boundaries_pass_required": True,
+        "generated_length_exact_match_required": True,
+        "generated_token_ids_exact_match_required": True,
+        "maximum_absolute_error_lte": 0.05,
+        "mean_absolute_error_lte": 0.005,
+        "minimum_top5_token_set_overlap": 5,
+        "nonfinite_count_lte": 0,
+        "oom_count_lte": 0,
+        "parameter_count_stable_required": True,
+        "state_dict_key_set_stable_required": True,
+    },
+    "legacy_elementwise_allclose": {
+        "atol": 0.01,
+        "controls_pass": False,
+        "required_report": True,
+        "role": "descriptive_only",
+        "rtol": 0.01,
+    },
+    "scenario": "short",
+    "threshold_selection": {
+        "frozen_before_any_v2_execution": True,
+        "must_not_change_after_v2_failure": True,
+        "selected_after_v1_failure_evidence": True,
+    },
+}
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 
 
@@ -242,8 +298,13 @@ def validate_protocol_document(document: Mapping[str, Any]) -> None:
     _require_exact(approval.get("approved_by"), "user", field="approval.approved_by")
     _require_exact(
         approval.get("approval_text"),
-        "批准 Day14 KV Cache v1 协议",
+        "批准 Day14 KV Cache v2 协议修订并按全新功能链重建",
         field="approval.approval_text",
+    )
+    _require_exact(
+        approval.get("approval_scope"),
+        "post_failure_protocol_revision_and_full_functional_chain_rebuild",
+        field="approval.approval_scope",
     )
 
     source = _require_mapping(document.get("source"), field="source")
@@ -288,6 +349,11 @@ def validate_protocol_document(document: Mapping[str, Any]) -> None:
         mutation_scope.get("functional_files"),
         list(EXPECTED_FUNCTIONAL_FILES),
         field="mutation_scope.functional_files",
+    )
+    _require_exact(
+        mutation_scope.get("frozen_unchanged_model_files"),
+        list(EXPECTED_FROZEN_MODEL_FILES),
+        field="mutation_scope.frozen_unchanged_model_files",
     )
     _require(
         "eval/generation.py" in mutation_scope.get("forbidden_files", []),
@@ -387,8 +453,13 @@ def validate_protocol_document(document: Mapping[str, Any]) -> None:
     )
     _require_exact(
         correctness.get("jetson_fp16"),
-        EXPECTED_JETSON_FP16_TOLERANCE,
+        EXPECTED_JETSON_FP16_CONTRACT,
         field="correctness.jetson_fp16",
+    )
+    _require_exact(
+        correctness.get("protocol_revision_after_v1_failure"),
+        True,
+        field="correctness.protocol_revision_after_v1_failure",
     )
     _require_exact(
         correctness.get("tolerance_may_be_relaxed_after_failure"),
@@ -443,6 +514,8 @@ def validate_protocol_document(document: Mapping[str, Any]) -> None:
 
     benchmark = _require_mapping(document.get("benchmark"), field="benchmark")
     for key, expected in {
+        "protocol_id": "day14-kv-cache-paired-benchmark-v2",
+        "correctness_prerequisite_protocol_id": PROTOCOL_ID,
         "precision": "fp16",
         "decoding": "greedy",
         "stop_on_eos": False,
@@ -459,6 +532,108 @@ def validate_protocol_document(document: Mapping[str, Any]) -> None:
         "bridge_is_historical_only": True,
     }.items():
         _require_exact(benchmark.get(key), expected, field=f"benchmark.{key}")
+
+    stability = _require_mapping(document.get("stability"), field="stability")
+    _require_exact(
+        stability.get("protocol_id"),
+        "day14-kv-cache-fp16-stability-v2",
+        field="stability.protocol_id",
+    )
+    _require_exact(
+        stability.get("correctness_prerequisite_protocol_id"),
+        PROTOCOL_ID,
+        field="stability.correctness_prerequisite_protocol_id",
+    )
+
+    revision = _require_mapping(document.get("revision"), field="revision")
+    _require_exact(
+        revision.get("revision_id"),
+        PROTOCOL_ID,
+        field="revision.revision_id",
+    )
+    _require_exact(
+        revision.get("supersedes_protocol_id"),
+        "day14-kv-cache-v1",
+        field="revision.supersedes_protocol_id",
+    )
+    _require_exact(
+        revision.get("supersedes_functional_commit"),
+        "74ff2619a6b20bb243d3e67c3bbb6a79a4cd54e3",
+        field="revision.supersedes_functional_commit",
+    )
+    prior_protocol = _require_mapping(
+        revision.get("prior_protocol"),
+        field="revision.prior_protocol",
+    )
+    _require_exact(
+        prior_protocol.get("bytes"),
+        16_134,
+        field="revision.prior_protocol.bytes",
+    )
+    _require_exact(
+        prior_protocol.get("sha256"),
+        "fe676b127c7bd0e08d920816dce547037669065d8aad721cc17dad0569b08b1c",
+        field="revision.prior_protocol.sha256",
+    )
+    scientific_disclosure = _require_mapping(
+        revision.get("scientific_disclosure"),
+        field="revision.scientific_disclosure",
+    )
+    for key, expected in {
+        "post_hoc_relative_to_v1": True,
+        "preregistered_before_any_v2_correctness_execution": True,
+        "v1_correctness_claimed_pass": False,
+        "v1_failure_record_count": 2,
+        "v1_failure_records_retained": True,
+        "v1_tolerance_changed": False,
+        "v2_must_not_be_reported_as_v1_pass": True,
+        "v2_threshold_relaxation_after_first_v2_execution_allowed": False,
+    }.items():
+        _require_exact(
+            scientific_disclosure.get(key),
+            expected,
+            field=f"revision.scientific_disclosure.{key}",
+        )
+
+    deployment_namespace = _require_mapping(
+        document.get("deployment_namespace"),
+        field="deployment_namespace",
+    )
+    _require_exact(
+        deployment_namespace.get("windows_package_root"),
+        "D:/model-backups/small-gpt/day14-v2/packages",
+        field="deployment_namespace.windows_package_root",
+    )
+    _require_exact(
+        deployment_namespace.get("jetson_deploy_root"),
+        "/home/jetson/small-gpt-day14-v2",
+        field="deployment_namespace.jetson_deploy_root",
+    )
+    _require_exact(
+        deployment_namespace.get("legacy_v1_mutation_allowed"),
+        False,
+        field="deployment_namespace.legacy_v1_mutation_allowed",
+    )
+
+    output_policy = _require_mapping(
+        document.get("output_policy"),
+        field="output_policy",
+    )
+    _require_exact(
+        output_policy.get("output_namespace"),
+        "day14-v2",
+        field="output_policy.output_namespace",
+    )
+    _require_exact(
+        output_policy.get("legacy_v1_outputs_read_only"),
+        True,
+        field="output_policy.legacy_v1_outputs_read_only",
+    )
+    _require_exact(
+        output_policy.get("legacy_v1_failure_records_required"),
+        2,
+        field="output_policy.legacy_v1_failure_records_required",
+    )
 
     safety = _require_mapping(document.get("safety"), field="safety")
     for key, value in safety.items():
@@ -675,10 +850,10 @@ def assert_ntp_synchronized() -> None:
 
 def validate_run_id(value: str, *, mode: str) -> str:
     prefixes = {
-        "correctness": "day14-jetson-kv-cache-correctness-",
-        "smoke": "day14-jetson-kv-cache-smoke-",
-        "benchmark": "day14-jetson-kv-cache-paired-benchmark-",
-        "stability": "day14-jetson-kv-cache-stability-",
+        "correctness": "day14-v2-jetson-kv-cache-correctness-",
+        "smoke": "day14-v2-jetson-kv-cache-smoke-",
+        "benchmark": "day14-v2-jetson-kv-cache-paired-benchmark-",
+        "stability": "day14-v2-jetson-kv-cache-stability-",
     }
     prefix = prefixes.get(mode)
     if prefix is None:
@@ -1127,6 +1302,8 @@ def validate_correctness_output(
         "small_gpt_day14_kv_cache_correctness_summary"
     ):
         raise Day14KVCacheError("correctness summary format changed")
+    if summary.get("schema_version") != 2:
+        raise Day14KVCacheError("correctness summary schema changed")
     comparisons_payload = (root / "comparisons.jsonl").read_bytes()
     published_files = summary.get("published_files")
     if not isinstance(published_files, dict):
@@ -1153,11 +1330,25 @@ def validate_correctness_output(
     comparison = summary.get("comparison")
     if not isinstance(comparison, dict):
         raise Day14KVCacheError("correctness comparison summary is missing")
+    runtime = summary.get("runtime")
+    if not isinstance(runtime, dict):
+        raise Day14KVCacheError("correctness runtime identity is missing")
+    precision = runtime.get("precision")
+    if precision not in {"fp32", "fp16"}:
+        raise Day14KVCacheError("correctness precision is invalid")
+    fp16_contract = (
+        protocol["correctness"]["jetson_fp16"]
+        if precision == "fp16"
+        else None
+    )
     if comparison.get("comparison_position_count") != len(rows):
         raise Day14KVCacheError("correctness comparison row count mismatch")
     if comparison.get("pass") is not True:
         raise Day14KVCacheError("correctness comparison did not pass")
-    if any(row.get("within_tolerance") is not True for row in rows):
+    if (
+        precision == "fp32"
+        and any(row.get("within_tolerance") is not True for row in rows)
+    ):
         raise Day14KVCacheError("one or more positions exceed tolerance")
     if any(row.get("all_finite") is not True for row in rows):
         raise Day14KVCacheError("one or more positions are non-finite")
@@ -1182,27 +1373,34 @@ def validate_correctness_output(
         raise Day14KVCacheError(
             "correctness row count does not match frozen scenario"
         )
-    runtime = summary.get("runtime")
-    if not isinstance(runtime, dict):
-        raise Day14KVCacheError("correctness runtime identity is missing")
-    tolerance_name = (
-        "jetson_fp16"
-        if runtime.get("precision") == "fp16"
-        else "jetson_fp32"
-    )
-    expected_tolerance = protocol["correctness"][tolerance_name]
+    if fp16_contract is not None:
+        if scenario_name != fp16_contract["scenario"]:
+            raise Day14KVCacheError(
+                "FP16 correctness scenario changed from the v2 contract"
+            )
+        if len(rows) != int(fp16_contract["comparison_position_count"]):
+            raise Day14KVCacheError(
+                "FP16 correctness comparison count changed"
+            )
+        expected_tolerance = fp16_contract["legacy_elementwise_allclose"]
+        expected_summary_tolerance = {
+            "contract_id": fp16_contract["contract_id"],
+            "legacy_elementwise_allclose": dict(expected_tolerance),
+            "hard_gates": dict(fp16_contract["hard_gates"]),
+            "relaxed_after_v2_execution": False,
+        }
+    else:
+        expected_tolerance = protocol["correctness"]["jetson_fp32"]
+        expected_summary_tolerance = {
+            "rtol": float(expected_tolerance["rtol"]),
+            "atol": float(expected_tolerance["atol"]),
+            "relaxed_after_failure": False,
+        }
     summary_tolerance = summary.get("tolerance", {})
-    if summary_tolerance != {
-        "rtol": float(expected_tolerance["rtol"]),
-        "atol": float(expected_tolerance["atol"]),
-        "relaxed_after_failure": False,
-    }:
+    if summary_tolerance != expected_summary_tolerance:
         raise Day14KVCacheError("correctness tolerance contract changed")
     prompt_length = int(scenario["prompt_length"])
     architecture = protocol["architecture"]
-    precision = runtime.get("precision")
-    if precision not in {"fp32", "fp16"}:
-        raise Day14KVCacheError("correctness precision is invalid")
     expected_dtype = "torch.float16" if precision == "fp16" else "torch.float32"
     if runtime.get("dtype") != expected_dtype:
         raise Day14KVCacheError("correctness runtime dtype changed")
@@ -1219,6 +1417,10 @@ def validate_correctness_output(
     bytes_per_element = 2 if precision == "fp16" else 4
     for index, row in enumerate(rows):
         expected_cache_length = prompt_length + index
+        if row.get("format_name") != "small_gpt_day14_kv_cache_comparison":
+            raise Day14KVCacheError("correctness row format changed")
+        if row.get("schema_version") != 2:
+            raise Day14KVCacheError("correctness row schema changed")
         expected_shape = [
             1,
             int(architecture["head_count"]),
@@ -1288,18 +1490,22 @@ def validate_correctness_output(
             raise Day14KVCacheError("correctness top-5 overlap is invalid")
         if row.get("finite_count") != 2 * int(architecture["vocab_size"]):
             raise Day14KVCacheError("correctness finite count changed")
+        if row.get("nonfinite_count") != 0:
+            raise Day14KVCacheError("correctness nonfinite count changed")
     if rows[-1].get("actual_cache_length") != int(
         scenario["expected_final_cache_length"]
     ):
         raise Day14KVCacheError("correctness final cache length mismatch")
-    required_comparison_flags = (
+    required_comparison_flags = [
         "generated_token_ids_exact_match",
+        "generated_length_exact_match",
         "all_logits_finite",
-        "all_positions_within_tolerance",
         "all_argmax_exact_match",
         "parameter_count_stable",
         "state_dict_key_set_stable",
-    )
+    ]
+    if precision == "fp32":
+        required_comparison_flags.append("all_positions_within_tolerance")
     if any(
         comparison.get(field) is not True
         for field in required_comparison_flags
@@ -1322,6 +1528,13 @@ def validate_correctness_output(
         expected_row_count * 2 * int(architecture["vocab_size"])
     ):
         raise Day14KVCacheError("correctness aggregate finite count changed")
+    observed_nonfinite_count = sum(
+        int(row.get("nonfinite_count", 0)) for row in rows
+    )
+    if comparison.get("nonfinite_count") != observed_nonfinite_count:
+        raise Day14KVCacheError("correctness aggregate nonfinite count changed")
+    if comparison.get("oom_count") != 0:
+        raise Day14KVCacheError("correctness OOM count changed")
     for field in ("maximum_absolute_error", "mean_absolute_error"):
         value = comparison.get(field)
         if (
@@ -1355,6 +1568,86 @@ def validate_correctness_output(
         or not 0 <= minimum_top5 <= 5
     ):
         raise Day14KVCacheError("correctness minimum top-5 overlap is invalid")
+    observed_legacy_passing = sum(
+        row.get("within_tolerance") is True for row in rows
+    )
+    observed_legacy_failing = len(rows) - observed_legacy_passing
+    observed_legacy_pass = observed_legacy_failing == 0
+    for field, expected in {
+        "all_positions_within_tolerance": observed_legacy_pass,
+        "legacy_elementwise_allclose_pass": observed_legacy_pass,
+        "legacy_elementwise_allclose_position_count": len(rows),
+        "legacy_elementwise_allclose_passing_position_count": (
+            observed_legacy_passing
+        ),
+        "legacy_elementwise_allclose_failing_position_count": (
+            observed_legacy_failing
+        ),
+    }.items():
+        if comparison.get(field) != expected:
+            raise Day14KVCacheError(
+                f"correctness legacy allclose field {field} changed"
+            )
+    observed_maximum_error = max(
+        float(row["maximum_absolute_error"]) for row in rows
+    )
+    observed_mean_error = sum(
+        float(row["mean_absolute_error"]) for row in rows
+    ) / len(rows)
+    observed_minimum_top5 = min(
+        int(row["top5_token_set_overlap"]) for row in rows
+    )
+    if float(comparison["maximum_absolute_error"]) != observed_maximum_error:
+        raise Day14KVCacheError("correctness maximum error disagrees with rows")
+    if float(comparison["mean_absolute_error"]) != observed_mean_error:
+        raise Day14KVCacheError("correctness mean error disagrees with rows")
+    if minimum_top5 != observed_minimum_top5:
+        raise Day14KVCacheError("correctness top-5 minimum disagrees with rows")
+    if fp16_contract is not None:
+        hard_gates = fp16_contract["hard_gates"]
+        expected_hard_gate_results = {
+            "all_argmax_exact_match_required": all(
+                row.get("argmax_exact_match") is True for row in rows
+            ),
+            "all_logits_finite_required": all(
+                row.get("all_finite") is True for row in rows
+            ),
+            "context_boundaries_pass_required": (
+                context_boundaries.get("pass") is True
+            ),
+            "generated_length_exact_match_required": (
+                comparison.get("generated_length_exact_match") is True
+            ),
+            "generated_token_ids_exact_match_required": (
+                comparison.get("generated_token_ids_exact_match") is True
+            ),
+            "maximum_absolute_error_lte": observed_maximum_error
+            <= float(hard_gates["maximum_absolute_error_lte"]),
+            "mean_absolute_error_lte": observed_mean_error
+            <= float(hard_gates["mean_absolute_error_lte"]),
+            "minimum_top5_token_set_overlap": observed_minimum_top5
+            >= int(hard_gates["minimum_top5_token_set_overlap"]),
+            "nonfinite_count_lte": observed_nonfinite_count
+            <= int(hard_gates["nonfinite_count_lte"]),
+            "oom_count_lte": int(comparison["oom_count"])
+            <= int(hard_gates["oom_count_lte"]),
+            "parameter_count_stable_required": (
+                comparison.get("parameter_count_stable") is True
+            ),
+            "state_dict_key_set_stable_required": (
+                comparison.get("state_dict_key_set_stable") is True
+            ),
+        }
+        if comparison.get("decision_contract_id") != fp16_contract["contract_id"]:
+            raise Day14KVCacheError("FP16 decision contract ID changed")
+        if comparison.get("decision_contract_applied") is not True:
+            raise Day14KVCacheError("FP16 decision contract was not applied")
+        if comparison.get("hard_gate_results") != expected_hard_gate_results:
+            raise Day14KVCacheError("FP16 hard-gate results changed")
+        if not all(expected_hard_gate_results.values()):
+            raise Day14KVCacheError("one or more FP16 hard gates failed")
+        if comparison.get("decision_contract_pass") is not True:
+            raise Day14KVCacheError("FP16 decision contract did not pass")
     expected_boundaries = {
         "prompt_context_minus_one_generate_one_allowed": True,
         "prompt_context_generate_one_rejected": True,
@@ -1520,19 +1813,39 @@ def run_correctness(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
         for item in session.protocol["prompt_builder"]["scenarios"]
         if item["name"] == args.scenario
     )
-    tolerance = session.protocol["correctness"][
-        "jetson_fp16" if args.precision == "fp16" else "jetson_fp32"
-    ]
+    fp16_contract: Mapping[str, Any] | None = None
+    if args.precision == "fp16":
+        fp16_contract = session.protocol["correctness"]["jetson_fp16"]
+        if args.scenario != fp16_contract["scenario"]:
+            raise Day14KVCacheError(
+                "FP16 correctness scenario must match the frozen v2 contract"
+            )
+        tolerance = fp16_contract["legacy_elementwise_allclose"]
+        tolerance_summary: dict[str, Any] = {
+            "contract_id": fp16_contract["contract_id"],
+            "legacy_elementwise_allclose": dict(tolerance),
+            "hard_gates": dict(fp16_contract["hard_gates"]),
+            "relaxed_after_v2_execution": False,
+        }
+    else:
+        tolerance = session.protocol["correctness"]["jetson_fp32"]
+        tolerance_summary = {
+            "rtol": float(tolerance["rtol"]),
+            "atol": float(tolerance["atol"]),
+            "relaxed_after_failure": False,
+        }
     output_dir = reserve_output_directory(output_candidate, run_id=run_id)
     try:
+        boundaries = benchmark.run_context_boundary_checks(session.model)
         comparison = benchmark.run_stepwise_correctness(
             session.model,
             prompts[args.scenario],
             max_new_tokens=int(scenario["max_new_tokens"]),
             rtol=float(tolerance["rtol"]),
             atol=float(tolerance["atol"]),
+            decision_contract=fp16_contract,
+            context_boundaries_pass=boundaries["pass"],
         )
-        boundaries = benchmark.run_context_boundary_checks(session.model)
         if comparison["pass"] is not True:
             raise Day14KVCacheError("reference/cached correctness comparison failed")
         if boundaries["pass"] is not True:
@@ -1543,7 +1856,7 @@ def run_correctness(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
         )
         summary = {
             "format_name": "small_gpt_day14_kv_cache_correctness_summary",
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "complete",
             "gate": "PASS",
             "run_id": run_id,
@@ -1616,11 +1929,7 @@ def run_correctness(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
                 "dtype": str(session.dtype),
                 "device": str(session.device),
             },
-            "tolerance": {
-                "rtol": float(tolerance["rtol"]),
-                "atol": float(tolerance["atol"]),
-                "relaxed_after_failure": False,
-            },
+            "tolerance": tolerance_summary,
             "comparison": {
                 key: value
                 for key, value in comparison.items()

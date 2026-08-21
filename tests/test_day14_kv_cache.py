@@ -789,7 +789,8 @@ def test_generation_rejects_training_mode_model():
 def test_frozen_protocol_loads_with_exact_identity():
     protocol = check.load_protocol(PROTOCOL_PATH)
 
-    assert protocol["protocol_id"] == "day14-kv-cache-v1"
+    assert protocol["schema_version"] == 2
+    assert protocol["protocol_id"] == "day14-kv-cache-v2"
     assert protocol["status"] == "frozen_after_user_approval"
     assert protocol["correctness"]["cpu_fp32"] == {
         "rtol": CPU_RTOL,
@@ -956,16 +957,16 @@ def test_stage_f_runtime_modes_fail_closed_before_artifact_loading(capsys):
     (
         (
             "correctness",
-            "day14-jetson-kv-cache-correctness-20260821T010203Z",
+            "day14-v2-jetson-kv-cache-correctness-20260821T010203Z",
         ),
-        ("smoke", "day14-jetson-kv-cache-smoke-20260821T010203Z"),
+        ("smoke", "day14-v2-jetson-kv-cache-smoke-20260821T010203Z"),
         (
             "benchmark",
-            "day14-jetson-kv-cache-paired-benchmark-20260821T010203Z",
+            "day14-v2-jetson-kv-cache-paired-benchmark-20260821T010203Z",
         ),
         (
             "stability",
-            "day14-jetson-kv-cache-stability-20260821T010203Z",
+            "day14-v2-jetson-kv-cache-stability-20260821T010203Z",
         ),
     ),
 )
@@ -977,10 +978,11 @@ def test_stage_f_run_id_contract_accepts_exact_utc_shape(mode, run_id):
     ("mode", "run_id"),
     (
         ("smoke", "day13-jetson-kv-cache-smoke-20260821T010203Z"),
-        ("smoke", "day14-jetson-kv-cache-smoke-local"),
-        ("smoke", "day14-jetson-kv-cache-smoke-20261340T256199Z"),
-        ("benchmark", "day14-jetson-kv-cache-smoke-20260821T010203Z"),
-        ("unknown", "day14-jetson-kv-cache-smoke-20260821T010203Z"),
+        ("smoke", "day14-jetson-kv-cache-smoke-20260821T010203Z"),
+        ("smoke", "day14-v2-jetson-kv-cache-smoke-local"),
+        ("smoke", "day14-v2-jetson-kv-cache-smoke-20261340T256199Z"),
+        ("benchmark", "day14-v2-jetson-kv-cache-smoke-20260821T010203Z"),
+        ("unknown", "day14-v2-jetson-kv-cache-smoke-20260821T010203Z"),
     ),
 )
 def test_stage_f_run_id_contract_rejects_wrong_identity(mode, run_id):
@@ -989,7 +991,7 @@ def test_stage_f_run_id_contract_rejects_wrong_identity(mode, run_id):
 
 
 def test_stage_f_output_directory_reservation_is_unique_and_exact(tmp_path):
-    run_id = "day14-jetson-kv-cache-smoke-20260821T010203Z"
+    run_id = "day14-v2-jetson-kv-cache-smoke-20260821T010203Z"
     output_dir = check.reserve_output_directory(
         tmp_path / run_id,
         run_id=run_id,
@@ -1006,7 +1008,7 @@ def test_stage_f_output_directory_reservation_is_unique_and_exact(tmp_path):
 
 
 def test_stage_f_output_preflight_has_no_filesystem_side_effect(tmp_path):
-    run_id = "day14-jetson-kv-cache-smoke-20260821T010203Z"
+    run_id = "day14-v2-jetson-kv-cache-smoke-20260821T010203Z"
     output_dir = tmp_path / "new-parent" / run_id
 
     resolved = check.preflight_output_directory(output_dir, run_id=run_id)
@@ -1221,8 +1223,15 @@ def test_stage_f_stepwise_correctness_reports_required_metrics():
     assert result["comparison_position_count"] == 4
     assert result["generated_token_count"] == 4
     assert result["generated_token_ids_exact_match"] is True
+    assert result["generated_length_exact_match"] is True
     assert result["all_logits_finite"] is True
     assert result["all_positions_within_tolerance"] is True
+    assert result["legacy_elementwise_allclose_pass"] is True
+    assert result["legacy_elementwise_allclose_position_count"] == 4
+    assert result["legacy_elementwise_allclose_passing_position_count"] == 4
+    assert result["legacy_elementwise_allclose_failing_position_count"] == 0
+    assert result["decision_contract_applied"] is False
+    assert result["hard_gate_results"] is None
     assert result["parameter_count_stable"] is True
     assert result["state_dict_key_set_stable"] is True
     assert [row["sequence_index"] for row in result["rows"]] == list(range(4))
@@ -1238,6 +1247,106 @@ def test_stage_f_stepwise_correctness_reports_required_metrics():
     assert [row["cache_value_shape"] for row in result["rows"]] == [
         [1, 2, length, 4] for length in (4, 5, 6, 7)
     ]
+
+
+def test_v2_fp16_decision_contract_allows_descriptive_allclose_failure():
+    torch.manual_seed(1452)
+    model = GPT(tiny_config()).eval()
+    original_forward_cached = model.forward_cached
+
+    def perturbed_forward_cached(input_ids, past_key_values=None):
+        output = original_forward_cached(input_ids, past_key_values)
+        logits = output.logits.clone()
+        indices = torch.argmin(logits, dim=-1, keepdim=True)
+        perturbation = torch.full_like(indices, -0.04, dtype=logits.dtype)
+        logits.scatter_add_(-1, indices, perturbation)
+        return GPTCachedOutput(
+            logits=logits,
+            past_key_values=output.past_key_values,
+        )
+
+    model.forward_cached = perturbed_forward_cached
+    protocol = check.load_protocol(PROTOCOL_PATH)
+    contract = dict(protocol["correctness"]["jetson_fp16"])
+    contract["comparison_position_count"] = 4
+
+    result = benchmark.run_stepwise_correctness(
+        model,
+        (1, 2, 3, 4),
+        max_new_tokens=4,
+        rtol=0.01,
+        atol=0.01,
+        decision_contract=contract,
+        context_boundaries_pass=True,
+    )
+
+    assert result["legacy_elementwise_allclose_pass"] is False
+    assert result["legacy_elementwise_allclose_failing_position_count"] > 0
+    assert result["all_argmax_exact_match"] is True
+    assert result["minimum_top5_token_set_overlap"] == 5
+    assert result["decision_contract_pass"] is True
+    assert all(result["hard_gate_results"].values())
+    assert result["pass"] is True
+
+
+def test_v1_observed_fp16_diagnostics_pass_preregistered_v2_hard_gates():
+    protocol = check.load_protocol(PROTOCOL_PATH)
+    contract = protocol["correctness"]["jetson_fp16"]
+
+    contract_id, results = benchmark._evaluate_decision_contract(
+        contract=contract,
+        maximum_absolute_error=0.0390625,
+        mean_absolute_error=0.0029780296463286504,
+        generated_token_ids_exact_match=True,
+        generated_length_exact_match=True,
+        all_argmax_exact_match=True,
+        minimum_top5_token_set_overlap=5,
+        all_logits_finite=True,
+        nonfinite_count=0,
+        parameter_count_stable=True,
+        state_dict_key_set_stable=True,
+        context_boundaries_pass=True,
+        oom_count=0,
+    )
+
+    assert contract_id == "jetson_fp16_decision_and_bounded_drift_v2"
+    assert all(results.values())
+
+
+@pytest.mark.parametrize(
+    ("maximum_absolute_error", "mean_absolute_error", "failed_gate"),
+    (
+        (0.0500001, 0.004, "maximum_absolute_error_lte"),
+        (0.04, 0.0050001, "mean_absolute_error_lte"),
+    ),
+)
+def test_v2_fp16_decision_contract_rejects_frozen_error_threshold_breach(
+    maximum_absolute_error,
+    mean_absolute_error,
+    failed_gate,
+):
+    protocol = check.load_protocol(PROTOCOL_PATH)
+    contract = protocol["correctness"]["jetson_fp16"]
+
+    contract_id, results = benchmark._evaluate_decision_contract(
+        contract=contract,
+        maximum_absolute_error=maximum_absolute_error,
+        mean_absolute_error=mean_absolute_error,
+        generated_token_ids_exact_match=True,
+        generated_length_exact_match=True,
+        all_argmax_exact_match=True,
+        minimum_top5_token_set_overlap=5,
+        all_logits_finite=True,
+        nonfinite_count=0,
+        parameter_count_stable=True,
+        state_dict_key_set_stable=True,
+        context_boundaries_pass=True,
+        oom_count=0,
+    )
+
+    assert contract_id == "jetson_fp16_decision_and_bounded_drift_v2"
+    assert results[failed_gate] is False
+    assert not all(results.values())
 
 
 def test_stage_f_context_boundary_checks_cover_all_frozen_rejections():
@@ -1258,7 +1367,7 @@ def test_stage_f_context_boundary_checks_cover_all_frozen_rejections():
 
 def _stage_f_synthetic_outputs(tmp_path):
     protocol = check.load_protocol(PROTOCOL_PATH)
-    run_id = "day14-jetson-kv-cache-smoke-20260821T010203Z"
+    run_id = "day14-v2-jetson-kv-cache-smoke-20260821T010203Z"
     output_dir = check.reserve_output_directory(
         tmp_path / run_id,
         run_id=run_id,
@@ -1487,15 +1596,29 @@ def test_stage_f_validator_rejects_unexpected_output_directory(tmp_path):
         )
 
 
-def test_stage_f_correctness_validator_freezes_rows_hash_and_boundary(tmp_path):
+@pytest.mark.parametrize(
+    ("precision", "legacy_failure_count"),
+    (("fp32", 0), ("fp16", 43)),
+)
+def test_stage_f_correctness_validator_freezes_rows_hash_and_boundary(
+    tmp_path,
+    precision,
+    legacy_failure_count,
+):
     protocol = check.load_protocol(PROTOCOL_PATH)
-    run_id = "day14-jetson-kv-cache-correctness-20260821T010203Z"
+    run_id = "day14-v2-jetson-kv-cache-correctness-20260821T010203Z"
     output_dir = check.reserve_output_directory(
         tmp_path / run_id,
         run_id=run_id,
     )
+    is_fp16 = precision == "fp16"
+    row_rtol = 1.0e-2 if is_fp16 else 1.0e-4
+    row_atol = 1.0e-2 if is_fp16 else 1.0e-5
+    payload_bytes_per_position = 16_384 if is_fp16 else 32_768
     rows = [
         {
+            "format_name": "small_gpt_day14_kv_cache_comparison",
+            "schema_version": 2,
             "sequence_index": index,
             "prefix_length": 16 + index,
             "expected_cache_length": 16 + index,
@@ -1503,7 +1626,7 @@ def test_stage_f_correctness_validator_freezes_rows_hash_and_boundary(tmp_path):
             "cache_key_shape": [1, 8, 16 + index, 64],
             "cache_value_shape": [1, 8, 16 + index, 64],
             "cache_layer_count": 8,
-            "cache_payload_bytes": 32_768 * (16 + index),
+            "cache_payload_bytes": payload_bytes_per_position * (16 + index),
             "maximum_absolute_error": 0.0,
             "mean_absolute_error": 0.0,
             "maximum_error_token_id": 1,
@@ -1512,9 +1635,10 @@ def test_stage_f_correctness_validator_freezes_rows_hash_and_boundary(tmp_path):
             "argmax_exact_match": True,
             "top5_token_set_overlap": 5,
             "finite_count": 32_768,
-            "rtol": 1.0e-4,
-            "atol": 1.0e-5,
-            "within_tolerance": True,
+            "nonfinite_count": 0,
+            "rtol": row_rtol,
+            "atol": row_atol,
+            "within_tolerance": index >= legacy_failure_count,
             "all_finite": True,
         }
         for index in range(64)
@@ -1524,29 +1648,52 @@ def test_stage_f_correctness_validator_freezes_rows_hash_and_boundary(tmp_path):
         output_dir / "comparisons.jsonl",
         comparisons_payload,
     )
+    if is_fp16:
+        fp16_contract = protocol["correctness"]["jetson_fp16"]
+        tolerance_summary = {
+            "contract_id": fp16_contract["contract_id"],
+            "legacy_elementwise_allclose": dict(
+                fp16_contract["legacy_elementwise_allclose"]
+            ),
+            "hard_gates": dict(fp16_contract["hard_gates"]),
+            "relaxed_after_v2_execution": False,
+        }
+        decision_fields = {
+            "decision_contract_id": fp16_contract["contract_id"],
+            "decision_contract_applied": True,
+            "decision_contract_pass": True,
+            "hard_gate_results": {
+                key: True for key in fp16_contract["hard_gates"]
+            },
+        }
+    else:
+        tolerance_summary = {
+            "rtol": row_rtol,
+            "atol": row_atol,
+            "relaxed_after_failure": False,
+        }
+        decision_fields = {}
     summary = {
         "format_name": "small_gpt_day14_kv_cache_correctness_summary",
+        "schema_version": 2,
         "run_id": run_id,
-        "protocol_id": "day14-kv-cache-v1",
+        "protocol_id": "day14-kv-cache-v2",
         "protocol_fingerprint": check.canonical_sha256(protocol),
         "status": "complete",
         "gate": "PASS",
         "scenario": "short",
         "runtime": {
             "device": "cuda:0",
-            "precision": "fp32",
-            "dtype": "torch.float32",
+            "precision": precision,
+            "dtype": "torch.float16" if is_fp16 else "torch.float32",
             "model_load_seconds": 1.0,
         },
-        "tolerance": {
-            "rtol": 1.0e-4,
-            "atol": 1.0e-5,
-            "relaxed_after_failure": False,
-        },
+        "tolerance": tolerance_summary,
         "comparison": {
             "comparison_position_count": 64,
             "generated_token_count": 64,
             "generated_token_ids_exact_match": True,
+            "generated_length_exact_match": True,
             "reference_generated_token_ids": [1] * 64,
             "cached_generated_token_ids": [1] * 64,
             "maximum_absolute_error": 0.0,
@@ -1556,12 +1703,23 @@ def test_stage_f_correctness_validator_freezes_rows_hash_and_boundary(tmp_path):
                 "token_id": 1,
             },
             "finite_count": 64 * 32_768,
+            "nonfinite_count": 0,
+            "oom_count": 0,
             "all_logits_finite": True,
-            "all_positions_within_tolerance": True,
+            "all_positions_within_tolerance": legacy_failure_count == 0,
+            "legacy_elementwise_allclose_pass": legacy_failure_count == 0,
+            "legacy_elementwise_allclose_position_count": 64,
+            "legacy_elementwise_allclose_passing_position_count": (
+                64 - legacy_failure_count
+            ),
+            "legacy_elementwise_allclose_failing_position_count": (
+                legacy_failure_count
+            ),
             "all_argmax_exact_match": True,
             "minimum_top5_token_set_overlap": 5,
             "parameter_count_stable": True,
             "state_dict_key_set_stable": True,
+            **decision_fields,
             "pass": True,
         },
         "model": {
@@ -1590,7 +1748,7 @@ def test_stage_f_correctness_validator_freezes_rows_hash_and_boundary(tmp_path):
             "layer_count": 8,
             "head_count": 8,
             "head_dimension": 64,
-            "dtype": "torch.float32",
+            "dtype": "torch.float16" if is_fp16 else "torch.float32",
             "device": "cuda:0",
         },
         "source": {
