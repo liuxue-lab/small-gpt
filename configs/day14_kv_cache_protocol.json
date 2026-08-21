@@ -1,0 +1,485 @@
+{
+  "adoption_gates": {
+    "below_threshold_result": "OptimizationAdoption=NOT_SUPPORTED",
+    "correctness_gate": "PASS",
+    "long_decode_speedup_minimum": 1.1,
+    "medium_decode_speedup_minimum": 1.1,
+    "performance_claim_scope": "same_device_descriptive",
+    "performance_gate_controls_day14_completion": false,
+    "reliability_regression": false,
+    "selective_rerun_for_better_numbers_allowed": false
+  },
+  "api_route": {
+    "attention_method": "CausalSelfAttention.forward_cached",
+    "block_method": "TransformerBlock.forward_cached",
+    "cached_output_fields": [
+      "logits",
+      "past_key_values"
+    ],
+    "cached_output_type": "GPTCachedOutput",
+    "cached_path_is_inference_only": true,
+    "gpt_method": "GPT.forward_cached",
+    "layer_cache_type": "LayerKVCache",
+    "optional_use_cache_keyword_added": false,
+    "original_forward_preserved": true,
+    "past_key_values_type": "PastKeyValues",
+    "requires_eval_mode": true,
+    "requires_torch_inference_mode": true,
+    "route_id": "separate_forward_cached_methods_v1",
+    "training_call_sites_changed": false
+  },
+  "approval": {
+    "approval_date": "2026-08-21",
+    "approval_text": "批准 Day14 KV Cache v1 协议",
+    "approved_by": "user",
+    "revision_policy": "Any change to prompt lengths, tolerances, measured pair count, timing definitions, cache semantics, context policy, or primary metrics requires a new protocol revision."
+  },
+  "architecture": {
+    "activation": "gelu_tanh",
+    "context_length": 512,
+    "dropout": 0.0,
+    "embedding_dimension": 512,
+    "ffn_hidden_dimension": 2048,
+    "head_count": 8,
+    "head_dimension": 64,
+    "layer_count": 8,
+    "linear_bias": false,
+    "lm_head_bias": false,
+    "model_role": "control",
+    "normalization": "pre_layernorm",
+    "parameters": 33833984,
+    "position_encoding": "learned_absolute",
+    "state_dict_key_count": 69,
+    "tied_embeddings": true,
+    "vocab_size": 16384
+  },
+  "benchmark": {
+    "batch_size": 1,
+    "bridge_is_historical_only": true,
+    "cached_strategy": "kv_cache",
+    "cuda_synchronize_before_and_after_timing": true,
+    "decoding": "greedy",
+    "empty_cache_between_requests": false,
+    "even_pair_order": [
+      "reference",
+      "kv_cache"
+    ],
+    "measured_pairs_per_scenario": 10,
+    "odd_pair_order": [
+      "kv_cache",
+      "reference"
+    ],
+    "precision": "fp16",
+    "primary_scenarios": [
+      "medium",
+      "long"
+    ],
+    "protocol_id": "day14-kv-cache-paired-benchmark-v1",
+    "record_actual_order": true,
+    "reference_strategy": "full_prefix_recompute",
+    "reset_peak_memory_before_each_request": true,
+    "single_model_load": true,
+    "stop_on_eos": false,
+    "warmup_pairs_per_scenario": 3,
+    "warmups_excluded_from_summary": true
+  },
+  "cache_contract": {
+    "append": {
+      "input_past_modified_in_place": false,
+      "operation": "torch_concat",
+      "sequence_dimension": 2
+    },
+    "baseline_shape_constants": {
+      "batch_size": 1,
+      "head_count": 8,
+      "head_dimension": 64,
+      "layer_count": 8
+    },
+    "causal_mask": {
+      "query_absolute_offset": "past_length",
+      "rule": "key_absolute_position_lte_query_absolute_position",
+      "single_token_decode_can_attend_all_past_and_current": true
+    },
+    "decode": {
+      "arbitrary_chunked_decode_allowed": false,
+      "input_length": 1,
+      "logits_cover": "current_input_position_only",
+      "past_required": true,
+      "present_length": "past_length_plus_one"
+    },
+    "final_length_semantics": {
+      "final_cache_length": "prompt_length_plus_generated_token_count_minus_one",
+      "returned_sequence_length": "prompt_length_plus_generated_token_count",
+      "unnecessary_final_forward_allowed": false
+    },
+    "layer_cache_members": [
+      "key",
+      "value"
+    ],
+    "payload_bytes": {
+      "excludes_allocator_overhead": true,
+      "formula": "2*layer_count*batch_size*head_count*cache_length*head_dimension*bytes_per_element",
+      "fp16_bytes_at_512_tokens": 8388608,
+      "fp16_bytes_per_token": 16384,
+      "fp32_bytes_at_512_tokens": 16777216,
+      "fp32_bytes_per_token": 32768
+    },
+    "position_ids": {
+      "single_token_decode_position": "past_length",
+      "with_past": "past_length_to_past_length_plus_input_length_minus_one",
+      "without_past": "0_to_input_length_minus_one"
+    },
+    "prefill": {
+      "first_generated_token_source": "prefill_last_position_logits",
+      "logits_cover": "all_prefill_input_positions",
+      "maximum_input_length": 512,
+      "minimum_input_length": 1,
+      "past_key_values": null,
+      "present_length": "prompt_length"
+    },
+    "request_lifetime": {
+      "cross_request_reuse_allowed": false,
+      "global_model_cache_allowed": false,
+      "new_request_starts_empty": true,
+      "query_cached": false
+    },
+    "state": {
+      "checkpoint_member": false,
+      "optimizer_state": false,
+      "persistent_buffer": false,
+      "registered_parameter": false
+    },
+    "tensor_shape_order": [
+      "batch_size",
+      "head_count",
+      "cache_sequence_length",
+      "head_dimension"
+    ]
+  },
+  "context_policy": {
+    "cache_eviction": false,
+    "constraint": "prompt_length_plus_generated_token_count_lte_512",
+    "inconsistent_layer_lengths_allowed": false,
+    "past_512_then_input_1_allowed": false,
+    "policy_id": "strict_no_overflow_v1",
+    "position_remapping": false,
+    "prompt_511_generate_1_allowed": true,
+    "prompt_512_generate_0_allowed": true,
+    "prompt_512_generate_1_allowed": false,
+    "prompt_513_allowed": false,
+    "rolling_window": false
+  },
+  "correctness": {
+    "cpu_fp32": {
+      "atol": 1e-06,
+      "rtol": 1e-05
+    },
+    "greedy_sequence": {
+      "divergence_blocks_formal_benchmark": true,
+      "generated_length_exact_match": true,
+      "generated_token_ids_exact_match": true,
+      "record_first_divergence": true
+    },
+    "jetson_fp16": {
+      "atol": 0.01,
+      "rtol": 0.01
+    },
+    "jetson_fp32": {
+      "atol": 1e-05,
+      "rtol": 0.0001
+    },
+    "model_invariants": {
+      "missing_keys": 0,
+      "parameter_count_after": 33833984,
+      "parameter_count_before": 33833984,
+      "state_dict_key_count_after": 69,
+      "state_dict_key_count_before": 69,
+      "state_dict_key_set_unchanged": true,
+      "strict_checkpoint_load": true,
+      "unexpected_keys": 0
+    },
+    "required_reports": [
+      "max_absolute_error",
+      "mean_absolute_error",
+      "maximum_error_index",
+      "reference_argmax",
+      "cached_argmax",
+      "top5_token_set_overlap",
+      "finite_count",
+      "comparison_position_count"
+    ],
+    "tolerance_may_be_relaxed_after_failure": false
+  },
+  "evidence_policy": {
+    "exclude": [
+      "checkpoint_bytes",
+      "tokenizer_json_bytes",
+      "formal_evaluation_data",
+      "credentials",
+      "private_network_identifiers"
+    ],
+    "include": [
+      "protocol",
+      "source_identity",
+      "artifact_identities",
+      "correctness_outputs",
+      "paired_benchmark_outputs",
+      "stability_outputs",
+      "tegrastats_log",
+      "validation_report"
+    ]
+  },
+  "format_name": "small_gpt_day14_kv_cache_protocol",
+  "frozen_artifacts": {
+    "baseline_config": {
+      "bytes": 1258,
+      "path": "configs/baseline.yaml",
+      "sha256": "ca8524c425e1e5e3a600de5773f9a526ef3674741040635bee91fe31f4b24c0e"
+    },
+    "control_checkpoint": {
+      "bytes": 406108827,
+      "path_windows": "D:/model-backups/small-gpt/day10/baseline-full-300m-20260813-232952/step-00004578.pt",
+      "role": "control",
+      "run_id": "baseline-full-300m-20260813-232952",
+      "sha256": "a39f8378ebe4012afb992be451d355e814b856ffb5e690ac011758f9db614b51"
+    },
+    "day13_evidence": {
+      "bytes": 43975,
+      "path_windows": "D:/model-backups/small-gpt/day13/evidence/small-gpt-day13-jetson-evidence-4c946adf-20260820T190445Z.zip",
+      "sha256": "19e0e42454eb5a9e8329a014e112a4347dcaefc1ba7ab6005b9aad71c5357d0e"
+    },
+    "day13_protocol": {
+      "bytes": 3506,
+      "path": "configs/day13_jetson_deployment_protocol.json",
+      "sha256": "0cb0eeeb47819351d44307afe54dc6dca270a6400a87c4cd22551988301985f3"
+    },
+    "identity_gate": "Day14StageA2FrozenArtifactGate=PASS",
+    "tokenizer_config": {
+      "bytes": 2988,
+      "path": "tokenizer/artifacts/tokenizer_config.json",
+      "sha256": "8622711407aab3f299996b7d3009d4f4447ae35879ca8e50451b5f0adbdf5141"
+    },
+    "tokenizer_json": {
+      "bytes": 1137073,
+      "path": "tokenizer/artifacts/tokenizer.json",
+      "sha256": "b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5"
+    }
+  },
+  "memory_and_thermal": {
+    "jetson_clocks": false,
+    "maximum_allowed_temperature_c": 70.0,
+    "power_mode_may_change_during_run": false,
+    "required_memory_fields": [
+      "cuda_allocated_before",
+      "cuda_reserved_before",
+      "cuda_peak_allocated",
+      "cuda_peak_reserved",
+      "cuda_allocated_after",
+      "cuda_reserved_after",
+      "mem_available_before",
+      "mem_available_after",
+      "swap_before",
+      "swap_after",
+      "cache_theoretical_bytes",
+      "cache_payload_bytes",
+      "final_cache_length"
+    ],
+    "required_tegrastats_fields": [
+      "sample_count",
+      "maximum_cpu_temperature_c",
+      "maximum_gpu_temperature_c",
+      "gr3d",
+      "input_power"
+    ],
+    "stop_after_temperature_gate_failure": true,
+    "temperature_gate_is_strict_less_than": true
+  },
+  "mutation_scope": {
+    "documentation_files_are_separate_later_scope": true,
+    "forbidden_files": [
+      "configs/baseline.yaml",
+      "configs/debug.yaml",
+      "configs/day13_jetson_deployment_protocol.json",
+      "eval/generation.py",
+      "scripts/benchmark_jetson_inference.py",
+      "scripts/check_jetson_deployment.py",
+      "tests/test_attention.py",
+      "tests/test_model.py",
+      "tests/test_generation.py",
+      "tests/test_day13_jetson_deployment.py",
+      "train/**",
+      "tokenizer/**"
+    ],
+    "functional_files": [
+      "configs/day14_kv_cache_protocol.json",
+      "model/__init__.py",
+      "model/attention.py",
+      "model/block.py",
+      "model/gpt.py",
+      "scripts/check_day14_kv_cache.py",
+      "scripts/benchmark_day14_kv_cache.py",
+      "tests/test_day14_kv_cache.py"
+    ]
+  },
+  "output_policy": {
+    "correctness_files": [
+      "correctness-summary.json",
+      "comparisons.jsonl"
+    ],
+    "failure_record_retained": true,
+    "manifest_published_last": true,
+    "ntp_synchronized_required": true,
+    "overwrite_allowed": false,
+    "success_files": [
+      "manifest.json",
+      "samples.jsonl",
+      "benchmark-summary.json",
+      "tegrastats.log"
+    ],
+    "unique_utc_run_id_required": true
+  },
+  "prompt_builder": {
+    "add_bos": false,
+    "algorithm_id": "encode_repeat_truncate_v1",
+    "append_eos": false,
+    "bridge_base_token_count": 3,
+    "bridge_base_token_ids_sha256": "b3326c1c2ed8138ef1b04f3660a370c953f78b99a2176ad55e18cabf1f118af4",
+    "bridge_text": "The solar system",
+    "exact_length_base_text": "Careful observation, precise measurement, reproducible experiments, and open debate turn scientific questions into reliable knowledge.",
+    "exact_length_base_token_count": 23,
+    "exact_length_base_token_ids_sha256": "059e630e9f17b3637fff2f4c9033c99f12850ce424c350482898eede5935478c",
+    "formal_evaluation_data_used": false,
+    "repeat_until_at_least_target": true,
+    "scenarios": [
+      {
+        "context_length": 512,
+        "expected_final_cache_length": 66,
+        "max_new_tokens": 64,
+        "name": "bridge",
+        "primary_for_adoption": false,
+        "prompt_length": 3,
+        "prompt_source": "literal_text",
+        "prompt_token_ids_sha256": "b3326c1c2ed8138ef1b04f3660a370c953f78b99a2176ad55e18cabf1f118af4",
+        "purpose": "day13_historical_bridge_only",
+        "returned_sequence_length": 67,
+        "within_context": true
+      },
+      {
+        "context_length": 512,
+        "expected_final_cache_length": 79,
+        "max_new_tokens": 64,
+        "name": "short",
+        "primary_for_adoption": false,
+        "prompt_length": 16,
+        "prompt_source": "encode_repeat_truncate_v1",
+        "prompt_token_ids_sha256": "4a2d500c90de5356b548f1c1ee0c5f8a76a10a50dfeb5125bc3e96ee76d618a4",
+        "purpose": "short_request_overhead",
+        "returned_sequence_length": 80,
+        "within_context": true
+      },
+      {
+        "context_length": 512,
+        "expected_final_cache_length": 255,
+        "max_new_tokens": 128,
+        "name": "medium",
+        "primary_for_adoption": true,
+        "prompt_length": 128,
+        "prompt_source": "encode_repeat_truncate_v1",
+        "prompt_token_ids_sha256": "3c01eea3f8b3271442f87a3716eafcae34d3d7206b2f4d6924c4737368795883",
+        "purpose": "medium_decode_adoption_gate",
+        "returned_sequence_length": 256,
+        "within_context": true
+      },
+      {
+        "context_length": 512,
+        "expected_final_cache_length": 511,
+        "max_new_tokens": 128,
+        "name": "long",
+        "primary_for_adoption": true,
+        "prompt_length": 384,
+        "prompt_source": "encode_repeat_truncate_v1",
+        "prompt_token_ids_sha256": "be9367c59ffd6b105a975d5c650282ce729b3fdf3dffddf32efbfd0ddace5299",
+        "purpose": "context_boundary_adoption_gate",
+        "returned_sequence_length": 512,
+        "within_context": true
+      }
+    ],
+    "token_ids_hash_encoding": "utf8_compact_json_integer_array_v1",
+    "tokenizer_sha256": "b26835e02eebf777a257c4732abdd6f9732a115967d2ad839f3a1a00e45ee8c5",
+    "truncate_to_exact_target": true
+  },
+  "protocol_id": "day14-kv-cache-v1",
+  "safety": {
+    "backward_allowed": false,
+    "checkpoint_write_allowed": false,
+    "concurrent_benchmark_allowed": false,
+    "formal_test_access": false,
+    "jetson_clocks_allowed": false,
+    "optimizer_creation_allowed": false,
+    "output_overwrite_allowed": false,
+    "power_mode_mutation_allowed": false,
+    "quantization_allowed": false,
+    "rolling_cache_allowed": false,
+    "tensorrt_allowed": false,
+    "torch_compile_allowed": false,
+    "training_allowed": false
+  },
+  "schema_version": 1,
+  "source": {
+    "day13_final_head": "6ef391625a091fc652ea85478d1e72abdb1bb56e",
+    "day13_final_parent": "4c946adffc0e5ee24b1377662819491a86c40aa5",
+    "day13_final_subject": "docs: close Day 13 Jetson deployment",
+    "remote_url": "https://github.com/liuxue-lab/small-gpt.git",
+    "repository": "liuxue-lab/small-gpt",
+    "required_branch": "main",
+    "source_gate": "Day14StageA1GitGate=PASS"
+  },
+  "stability": {
+    "all_token_ids_in_range_required": true,
+    "claim_scope_excludes": [
+      "continuous_7x24_operation",
+      "concurrent_stability",
+      "batch_size_greater_than_one",
+      "ros_camera_lidar_coexistence",
+      "absolute_memory_leak_freedom"
+    ],
+    "completed_requests_required": 30,
+    "concurrent_requests": 1,
+    "context_overflow_count_allowed": 0,
+    "decode_strategy": "kv_cache",
+    "failed_requests_allowed": 0,
+    "new_empty_cache_per_request": true,
+    "nonfinite_count_allowed": 0,
+    "oom_count_allowed": 0,
+    "precision": "fp16",
+    "protocol_id": "day14-kv-cache-fp16-stability-v1",
+    "requests_per_scenario": 10,
+    "scenario_rotation": [
+      "short",
+      "medium",
+      "long"
+    ],
+    "sequential_requests": 30,
+    "temperature_gate_c": 70.0
+  },
+  "status": "frozen_after_user_approval",
+  "timing_and_metrics": {
+    "decode_time": "first_generated_token_ready_to_last_generated_token_ready",
+    "decode_token_count": "max_new_tokens_minus_one",
+    "decode_tokens_per_second": "decode_token_count_divided_by_decode_time",
+    "end_to_end_tokens_per_second": "max_new_tokens_divided_by_request_wall_time",
+    "required_fields": [
+      "model_load_seconds",
+      "prompt_preparation_seconds",
+      "prefill_seconds",
+      "ttft_seconds",
+      "decode_seconds",
+      "decode_token_count",
+      "decode_tokens_per_second",
+      "per_token_latency_seconds",
+      "request_wall_seconds",
+      "end_to_end_tokens_per_second"
+    ],
+    "ttft": "request_start_to_first_generated_token_ready"
+  }
+}
