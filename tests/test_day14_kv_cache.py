@@ -27,6 +27,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROTOCOL_PATH = PROJECT_ROOT / "configs" / "day14_kv_cache_protocol.json"
 CPU_RTOL = 1.0e-5
 CPU_ATOL = 1.0e-6
+EXPECTED_RUNTIME_BRANCH = "day14-kv-cache-v2"
+EXPECTED_F0_APPROVAL_TEXT = (
+    "批准 Day14 v2 Stage F0 分支契约修正：将 required_branch 从 main 修正为 "
+    "day14-kv-cache-v2，更新 protocol、checker 与测试，执行定向及完整回归，创建"
+    "新提交并普通推送功能分支，重建冻结 package，并部署到全新 v2-r1 隔离目录；"
+    "禁止修改 v1、覆盖现有 v2、amend、force push、复制或链接 checkpoint、安装或"
+    "升级 Torch、训练及自动重试。"
+)
 
 
 def tiny_config(**overrides) -> GPTConfig:
@@ -798,6 +806,61 @@ def test_frozen_protocol_loads_with_exact_identity():
     }
 
 
+def test_f0_branch_contract_correction_and_isolated_namespace_are_frozen():
+    protocol = check.load_protocol(PROTOCOL_PATH)
+    correction = protocol["revision"]["branch_contract_correction"]
+
+    assert protocol["source"]["required_branch"] == EXPECTED_RUNTIME_BRANCH
+    assert correction["approval_text"] == EXPECTED_F0_APPROVAL_TEXT
+    assert correction["approved_by"] == "user"
+    assert correction["corrected_before_stage_f_runtime_execution"] is True
+    assert correction["changed_fields"]["source.required_branch"] == {
+        "from": "main",
+        "to": EXPECTED_RUNTIME_BRANCH,
+    }
+    assert correction["unchanged_contracts"] == [
+        "architecture",
+        "api_route",
+        "cache_contract",
+        "context_policy",
+        "correctness",
+        "memory_and_thermal",
+        "prompt_builder",
+        "safety",
+        "timing_and_metrics",
+    ]
+    namespace = protocol["deployment_namespace"]
+    assert namespace["jetson_deploy_root"] == (
+        "/home/jetson/small-gpt-day14-v2-r1"
+    )
+    assert namespace["jetson_incoming_pattern"] == (
+        "/home/jetson/small-gpt-day14-v2-r1-incoming-<functional_short_sha>"
+    )
+    assert namespace["windows_package_build_pattern"] == (
+        "D:/model-backups/small-gpt/day14-v2-r1/packages/"
+        "build-<functional_short_sha>"
+    )
+    assert namespace["windows_package_root"] == (
+        "D:/model-backups/small-gpt/day14-v2-r1/packages"
+    )
+
+
+def test_f0_runtime_branch_gate_uses_the_frozen_feature_branch():
+    check.validate_runtime_branch(
+        EXPECTED_RUNTIME_BRANCH,
+        EXPECTED_RUNTIME_BRANCH,
+    )
+
+    with pytest.raises(
+        check.Day14KVCacheError,
+        match=(
+            "runtime branch mismatch: 'main' != required branch "
+            "'day14-kv-cache-v2'"
+        ),
+    ):
+        check.validate_runtime_branch("main", EXPECTED_RUNTIME_BRANCH)
+
+
 def test_mutated_protocol_is_rejected_by_frozen_identity(tmp_path):
     document = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
     document["protocol_id"] = "mutated"
@@ -1464,7 +1527,7 @@ def _stage_f_synthetic_outputs(tmp_path):
         tegrastats=tegrastats,
         model_load_seconds=1.0,
         source={
-            "branch": "main",
+            "branch": EXPECTED_RUNTIME_BRANCH,
             "head": "f" * 40,
             "remote_url": "https://github.com/liuxue-lab/small-gpt.git",
             "worktree_entries": 0,
@@ -1752,7 +1815,7 @@ def test_stage_f_correctness_validator_freezes_rows_hash_and_boundary(
             "device": "cuda:0",
         },
         "source": {
-            "branch": "main",
+            "branch": EXPECTED_RUNTIME_BRANCH,
             "head": "f" * 40,
             "remote_url": "https://github.com/liuxue-lab/small-gpt.git",
             "worktree_entries": 0,

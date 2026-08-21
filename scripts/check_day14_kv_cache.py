@@ -32,11 +32,42 @@ FORMAT_NAME = "small_gpt_day14_kv_cache_protocol"
 SCHEMA_VERSION = 2
 PROTOCOL_ID = "day14-kv-cache-v2"
 PROTOCOL_STATUS = "frozen_after_user_approval"
-EXPECTED_PROTOCOL_BYTES = 23_103
+EXPECTED_PROTOCOL_BYTES = 25_527
 EXPECTED_PROTOCOL_SHA256 = (
-    "df5dcc7d7b6219033c3b5e4f4367270bee3620e2839d1b9501c03cdf16ddd484"
+    "2a09c1adf3f01194deb305417f218976a084825e6afe3ca37616a180ed37b762"
 )
 EXPECTED_SOURCE_HEAD = "6ef391625a091fc652ea85478d1e72abdb1bb56e"
+EXPECTED_REQUIRED_BRANCH = "day14-kv-cache-v2"
+EXPECTED_JETSON_DEPLOY_ROOT = "/home/jetson/small-gpt-day14-v2-r1"
+EXPECTED_JETSON_INCOMING_PATTERN = (
+    "/home/jetson/small-gpt-day14-v2-r1-incoming-<functional_short_sha>"
+)
+EXPECTED_WINDOWS_PACKAGE_ROOT = (
+    "D:/model-backups/small-gpt/day14-v2-r1/packages"
+)
+EXPECTED_WINDOWS_PACKAGE_BUILD_PATTERN = (
+    "D:/model-backups/small-gpt/day14-v2-r1/packages/"
+    "build-<functional_short_sha>"
+)
+BRANCH_CORRECTION_ID = "day14-kv-cache-v2-f0-branch-contract-correction"
+BRANCH_CORRECTION_APPROVAL_TEXT = (
+    "批准 Day14 v2 Stage F0 分支契约修正：将 required_branch 从 main 修正为 "
+    "day14-kv-cache-v2，更新 protocol、checker 与测试，执行定向及完整回归，创建"
+    "新提交并普通推送功能分支，重建冻结 package，并部署到全新 v2-r1 隔离目录；"
+    "禁止修改 v1、覆盖现有 v2、amend、force push、复制或链接 checkpoint、安装或"
+    "升级 Torch、训练及自动重试。"
+)
+BRANCH_CORRECTION_UNCHANGED_CONTRACTS = (
+    "architecture",
+    "api_route",
+    "cache_contract",
+    "context_policy",
+    "correctness",
+    "memory_and_thermal",
+    "prompt_builder",
+    "safety",
+    "timing_and_metrics",
+)
 EXPECTED_PARAMETERS = 33_833_984
 EXPECTED_STATE_DICT_KEYS = 69
 EXPECTED_LAYER_COUNT = 8
@@ -315,10 +346,9 @@ def validate_protocol_document(document: Mapping[str, Any]) -> None:
     )
     _require_exact(
         source.get("required_branch"),
-        "main",
+        EXPECTED_REQUIRED_BRANCH,
         field="source.required_branch",
     )
-
     architecture = _require_mapping(
         document.get("architecture"),
         field="architecture",
@@ -546,6 +576,62 @@ def validate_protocol_document(document: Mapping[str, Any]) -> None:
     )
 
     revision = _require_mapping(document.get("revision"), field="revision")
+    branch_correction = _require_mapping(
+        revision.get("branch_contract_correction"),
+        field="revision.branch_contract_correction",
+    )
+    expected_changed_fields = {
+        "deployment_namespace.jetson_deploy_root": {
+            "from": "/home/jetson/small-gpt-day14-v2",
+            "to": EXPECTED_JETSON_DEPLOY_ROOT,
+        },
+        "deployment_namespace.jetson_incoming_pattern": {
+            "from": (
+                "/home/jetson/small-gpt-day14-v2-incoming-"
+                "<functional_short_sha>"
+            ),
+            "to": EXPECTED_JETSON_INCOMING_PATTERN,
+        },
+        "deployment_namespace.windows_package_build_pattern": {
+            "from": None,
+            "to": EXPECTED_WINDOWS_PACKAGE_BUILD_PATTERN,
+        },
+        "deployment_namespace.windows_package_root": {
+            "from": "D:/model-backups/small-gpt/day14-v2/packages",
+            "to": EXPECTED_WINDOWS_PACKAGE_ROOT,
+        },
+        "source.required_branch": {
+            "from": "main",
+            "to": EXPECTED_REQUIRED_BRANCH,
+        },
+    }
+    for key, expected in {
+        "approval_date": "2026-08-21",
+        "approval_text": BRANCH_CORRECTION_APPROVAL_TEXT,
+        "approved_by": "user",
+        "changed_fields": expected_changed_fields,
+        "corrected_before_stage_f_runtime_execution": True,
+        "correction_id": BRANCH_CORRECTION_ID,
+        "reason": (
+            "The v2 functional commit and isolated Jetson deployment run on the "
+            "day14-kv-cache-v2 feature branch, while the inherited main-branch "
+            "runtime assertion would reject the approved v2 execution before "
+            "checkpoint loading. The replacement deployment namespace prevents "
+            "overwrite of the existing v2 deployment."
+        ),
+        "scope": "branch_identity_and_isolated_deployment_namespace_only",
+        "unchanged_contracts": list(BRANCH_CORRECTION_UNCHANGED_CONTRACTS),
+    }.items():
+        _require_exact(
+            branch_correction.get(key),
+            expected,
+            field=f"revision.branch_contract_correction.{key}",
+        )
+    _require_exact(
+        source.get("required_branch"),
+        expected_changed_fields["source.required_branch"]["to"],
+        field="source.required_branch_correction_identity",
+    )
     _require_exact(
         revision.get("revision_id"),
         PROTOCOL_ID,
@@ -601,13 +687,23 @@ def validate_protocol_document(document: Mapping[str, Any]) -> None:
     )
     _require_exact(
         deployment_namespace.get("windows_package_root"),
-        "D:/model-backups/small-gpt/day14-v2/packages",
+        EXPECTED_WINDOWS_PACKAGE_ROOT,
         field="deployment_namespace.windows_package_root",
     )
     _require_exact(
+        deployment_namespace.get("windows_package_build_pattern"),
+        EXPECTED_WINDOWS_PACKAGE_BUILD_PATTERN,
+        field="deployment_namespace.windows_package_build_pattern",
+    )
+    _require_exact(
         deployment_namespace.get("jetson_deploy_root"),
-        "/home/jetson/small-gpt-day14-v2",
+        EXPECTED_JETSON_DEPLOY_ROOT,
         field="deployment_namespace.jetson_deploy_root",
+    )
+    _require_exact(
+        deployment_namespace.get("jetson_incoming_pattern"),
+        EXPECTED_JETSON_INCOMING_PATTERN,
+        field="deployment_namespace.jetson_incoming_pattern",
     )
     _require_exact(
         deployment_namespace.get("legacy_v1_mutation_allowed"),
@@ -831,6 +927,14 @@ def git_source_identity(
     )
 
 
+def validate_runtime_branch(actual_branch: str, required_branch: str) -> None:
+    if actual_branch != required_branch:
+        raise Day14KVCacheError(
+            "runtime branch mismatch: "
+            f"{actual_branch!r} != required branch {required_branch!r}"
+        )
+
+
 def assert_ntp_synchronized() -> None:
     completed = subprocess.run(
         ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
@@ -1006,8 +1110,8 @@ def load_runtime_session(
         raise Day14KVCacheError(
             "expected functional HEAD must be a 40-character lowercase SHA"
         )
-    if source.branch != protocol["source"]["required_branch"]:
-        raise Day14KVCacheError("runtime branch is not the required main branch")
+    required_branch = str(protocol["source"]["required_branch"])
+    validate_runtime_branch(source.branch, required_branch)
     if source.head != expected_functional_head:
         raise Day14KVCacheError(
             f"runtime HEAD mismatch: {source.head} != {expected_functional_head}"

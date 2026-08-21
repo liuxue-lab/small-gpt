@@ -247,13 +247,14 @@
     "checkpoint_copy_allowed": false,
     "checkpoint_link_allowed": false,
     "checkpoint_reuse_mode": "read_only_existing_day13_path",
-    "jetson_deploy_root": "/home/jetson/small-gpt-day14-v2",
-    "jetson_incoming_pattern": "/home/jetson/small-gpt-day14-v2-incoming-<functional_short_sha>",
+    "jetson_deploy_root": "/home/jetson/small-gpt-day14-v2-r1",
+    "jetson_incoming_pattern": "/home/jetson/small-gpt-day14-v2-r1-incoming-<functional_short_sha>",
     "legacy_v1_deploy_root": "/home/jetson/small-gpt-day14",
     "legacy_v1_incoming_root": "/home/jetson/small-gpt-day14-incoming-74ff2619",
     "legacy_v1_mutation_allowed": false,
     "new_deploy_must_be_absent_before_build": true,
-    "windows_package_root": "D:/model-backups/small-gpt/day14-v2/packages"
+    "windows_package_build_pattern": "D:/model-backups/small-gpt/day14-v2-r1/packages/build-<functional_short_sha>",
+    "windows_package_root": "D:/model-backups/small-gpt/day14-v2-r1/packages"
   },
   "evidence_policy": {
     "exclude": [
@@ -477,6 +478,48 @@
   },
   "protocol_id": "day14-kv-cache-v2",
   "revision": {
+    "branch_contract_correction": {
+      "approval_date": "2026-08-21",
+      "approval_text": "批准 Day14 v2 Stage F0 分支契约修正：将 required_branch 从 main 修正为 day14-kv-cache-v2，更新 protocol、checker 与测试，执行定向及完整回归，创建新提交并普通推送功能分支，重建冻结 package，并部署到全新 v2-r1 隔离目录；禁止修改 v1、覆盖现有 v2、amend、force push、复制或链接 checkpoint、安装或升级 Torch、训练及自动重试。",
+      "approved_by": "user",
+      "changed_fields": {
+        "deployment_namespace.jetson_deploy_root": {
+          "from": "/home/jetson/small-gpt-day14-v2",
+          "to": "/home/jetson/small-gpt-day14-v2-r1"
+        },
+        "deployment_namespace.jetson_incoming_pattern": {
+          "from": "/home/jetson/small-gpt-day14-v2-incoming-<functional_short_sha>",
+          "to": "/home/jetson/small-gpt-day14-v2-r1-incoming-<functional_short_sha>"
+        },
+        "deployment_namespace.windows_package_build_pattern": {
+          "from": null,
+          "to": "D:/model-backups/small-gpt/day14-v2-r1/packages/build-<functional_short_sha>"
+        },
+        "deployment_namespace.windows_package_root": {
+          "from": "D:/model-backups/small-gpt/day14-v2/packages",
+          "to": "D:/model-backups/small-gpt/day14-v2-r1/packages"
+        },
+        "source.required_branch": {
+          "from": "main",
+          "to": "day14-kv-cache-v2"
+        }
+      },
+      "corrected_before_stage_f_runtime_execution": true,
+      "correction_id": "day14-kv-cache-v2-f0-branch-contract-correction",
+      "reason": "The v2 functional commit and isolated Jetson deployment run on the day14-kv-cache-v2 feature branch, while the inherited main-branch runtime assertion would reject the approved v2 execution before checkpoint loading. The replacement deployment namespace prevents overwrite of the existing v2 deployment.",
+      "scope": "branch_identity_and_isolated_deployment_namespace_only",
+      "unchanged_contracts": [
+        "architecture",
+        "api_route",
+        "cache_contract",
+        "context_policy",
+        "correctness",
+        "memory_and_thermal",
+        "prompt_builder",
+        "safety",
+        "timing_and_metrics"
+      ]
+    },
     "changed_contracts": [
       "jetson_fp16_correctness_decision_rule",
       "protocol_identity",
@@ -593,7 +636,7 @@
     "day13_final_subject": "docs: close Day 13 Jetson deployment",
     "remote_url": "https://github.com/liuxue-lab/small-gpt.git",
     "repository": "liuxue-lab/small-gpt",
-    "required_branch": "main",
+    "required_branch": "day14-kv-cache-v2",
     "source_gate": "Day14StageA1GitGate=PASS",
     "v1_functional_head": "74ff2619a6b20bb243d3e67c3bbb6a79a4cd54e3",
     "v1_functional_parent": "6ef391625a091fc652ea85478d1e72abdb1bb56e",
