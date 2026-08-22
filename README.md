@@ -8,8 +8,8 @@
 
 | 项目 | 当前状态 |
 | --- | --- |
-| 当前阶段 | Day 13 已在 Jetson Orin Nano Super 8GB 完成 Control 模型的原生 PyTorch FP32/FP16 推理、benchmark、稳定性与 evidence 闭环 |
-| 自动测试 | Day 13 功能提交 `4c946adf`：本地完整回归 `712 passed`，其中新增 55 个部署测试 |
+| 当前阶段 | Day 14 KV Cache v2 功能代码与 v2-r1 隔离部署已完成；F1 Jetson runtime acceptance 证据缺失，状态为 `UNKNOWN`，Day 14 尚未闭环 |
+| 自动测试 | 旧会话冻结记录报告 PyArrow 修复后 `3 / 110 / 822 passed`；本次文档恢复没有重跑测试，原始 stdout 未在当前证据中恢复 |
 | 数据集 | `HuggingFaceFW/fineweb-edu` / `sample-10BT` |
 | 数据访问方式 | 固定 revision、14 个显式 Parquet 源文件、经过 bytes/SHA 验证的可恢复本地 cache |
 | 数据管线 | 支持清洗、去重、划分、分片、恢复与完整性校验 |
@@ -44,7 +44,11 @@
 | Day 13 benchmark | 同设备 FP32 78.82 end-to-end tok/s；FP16 83.75 tok/s；仅作当前设备描述性比较 |
 | Day 13 stability | FP16 10/10 串行请求、640 tokens；未观察到 allocator 单调无界增长；最高 46.781°C |
 | Day 13 evidence | 43,975-byte ZIP，SHA-256 `19e0e42454eb5a9e8329a014e112a4347dcaefc1ba7ab6005b9aad71c5357d0e`，Windows 独立复核通过 |
-| Git 分支 | `main` |
+| Day 14 KV Cache | 独立 inference-only cached API；保留原始 `forward` 与训练路径；不把 cache 写入 checkpoint |
+| Day 14 Git | v1 `74ff2619`、v2 `c3076da0`、分支契约修复 `774cf358`；main、feature tracking 与远端均已对齐 `774cf358` |
+| Day 14 F0D | v2-r1 隔离部署及三份 F0D evidence 已确认，最后一个有证据的门禁为 `PASS` |
+| Day 14 F1 | 预期 evidence 目录不存在，未发现 v2 correctness、benchmark、stability 或最终 acceptance 输出；状态为 `UNKNOWN` |
+| Git 分支 | `main`，HEAD `774cf358be9822cdeb6a5921bc9068c1312bc192` |
 
 > FineWeb-Edu 的 `provided_token_count` 使用上游 Tokenizer 口径，只用于语料采集预算。当前项目 BPE 在全 Pilot 上产生 2,129,776 个模型 token，比 2,000,083 个 provided tokens 高约 6.48%。后续训练预算以项目 Tokenizer 的实际 token 数为准。
 
@@ -502,6 +506,84 @@ model-only load 在 `cuda:0` 上 strict 通过：33,833,984 参数、`missing_ke
 
 Jetson evidence archive 为 43,975 bytes，SHA-256 为 `19e0e42454eb5a9e8329a014e112a4347dcaefc1ba7ab6005b9aad71c5357d0e`。29 个文件通过 Windows 外层 SHA、ZIP CRC、内部 hash、JSON/JSONL、路径安全和语义身份独立复核；archive 不包含 checkpoint、Tokenizer binary、Git bundle、凭据或局域网地址。完整协议、性能、温度、内存、故障恢复和边界见 [Day 13 Jetson Orin Nano Super 推理部署执行报告](reports/day-13-jetson-deployment-report.md)。
 
+## Day 14 KV Cache v2 实现与恢复状态
+
+Day 14 在保留 Day 13 Control checkpoint 和原始训练路径的前提下，为自回归生成增加独立的 KV Cache 推理路径。当前代码和 Git 身份已经闭环，但 Jetson F1 runtime acceptance 没有形成可恢复证据，因此本节只记录已证实事实，不填写缺失性能数字，也不把 Day 14 标记为完成。
+
+### 功能与提交身份
+
+| 项目 | 证据状态 |
+| --- | --- |
+| KV Cache v1 功能提交 | `74ff2619a6b20bb243d3e67c3bbb6a79a4cd54e3`，`feat: add verified KV-cache inference` |
+| KV Cache v2 修订提交 | `c3076da038814f0d3da25d2030eb8201643c6e67`，`fix: add preregistered KV-cache v2 correctness gates` |
+| v2 分支契约修复 | `774cf358be9822cdeb6a5921bc9068c1312bc192`，`fix: align KV-cache v2 runtime branch contract` |
+| 冻结协议 | `configs/day14_kv_cache_protocol.json`，`protocol_id=day14-kv-cache-v2` |
+| 要求分支 | `day14-kv-cache-v2`；原错误值 `main` 已在 `774cf358` 修正 |
+| GitHub 状态 | `main` 与 `day14-kv-cache-v2` 均指向 `774cf358` |
+
+`774cf358` 直接修改 protocol、checker 和 tests 三个文件；从旧 main `74ff2619` fast-forward 到该提交时，累计包含 Day 14 的 protocol、benchmark、checker 和 tests 四个功能文件。该过程没有 amend、force push 或 tag。
+
+### 冻结的缓存契约
+
+- 每层 cache 保存 key/value，张量顺序为 `[batch, heads, cache_sequence, head_dimension]`；
+- prefill 使用完整 prompt，后续 decode 每次输入一个 token；
+- position IDs 从 `past_length` 继续递增；
+- 最大上下文仍为 512，禁止越界、滚动窗口和 cache eviction；
+- 新请求必须从空 cache 开始，禁止跨请求复用；
+- cached 路径只允许 `eval()` 与 `torch.inference_mode()`；
+- 原始 `forward`、训练调用点、optimizer 和 checkpoint schema 保持不变；
+- checkpoint 不包含 cache，禁止训练、backward、量化、TensorRT 和 `torch.compile`。
+
+### v1 证据与 v2 修订边界
+
+冻结协议保留了 v1 历史证据：FP32 model-only load 与 FP32 correctness 为 PASS；两次 FP16 v1 尝试没有通过原 elementwise-allclose 硬门，因此不得把 v1 写成完整 correctness PASS。
+
+v1 FP16 观测中，greedy token IDs、argmax、top-5 token set、finite logits 和 context boundaries 均保持一致；最大绝对误差为 `0.0390625`，平均绝对误差为 `0.0029780296463286504`，但 64 个位置中有 43 个未通过旧 allclose 判断。v2 在任何 v2 correctness 执行前冻结了 decision-and-bounded-drift 合约；该修订不能倒写成 v1 已通过，也不能被当作 v2 运行结果。
+
+### F0D 隔离部署
+
+v2-r1 package 绑定 `774cf358`，部署根为 `/home/jetson/small-gpt-day14-v2-r1`。只读恢复确认三份 F0D evidence 存在：
+
+```text
+small-gpt-day14-v2-r1-transfer-manifest-774cf358.json
+stage-f0d-isolation-inventory.json
+stage-f0d-pip-freeze.txt
+```
+
+因此最后一个有直接证据的 Day 14 门禁为：
+
+```text
+Day14V2StageF0DJetsonIsolatedDeployment=PASS
+```
+
+### F1 只读证据恢复结果
+
+2026-08-22 在用户授权下，仅通过 Windows PowerShell 和 SSH 对 Jetson 做文件名、bytes 与修改时间清点。没有运行 Python、correctness、benchmark 或 stability，没有修改或删除远端文件，也没有读取、复制或链接 checkpoint。
+
+结果为：
+
+```text
+DeploymentRootExists=True
+EvidenceRootExists=True
+ExpectedF1EvidenceDirectoryExists=False
+EvidenceFileCount=3
+F1EvidenceFileCount=0
+Day14F1RemoteEvidenceInventoryExit=0
+```
+
+三个现存文件全部属于 F0D。未发现 v2 correctness summary/comparisons、paired benchmark summary/samples、stability 输出、tegrastats 或最终 manifest。因此只能得出：
+
+```text
+Day14FunctionalCodeAndGit=PASS
+Day14V2StageF0DJetsonIsolatedDeployment=PASS
+Day14F1RuntimeAcceptance=UNKNOWN
+Day14OverallStatus=INCOMPLETE
+```
+
+`UNKNOWN` 表示没有足够证据确认 F1 是否完整执行，不等于运行失败。协议中的阈值和预期字段不是实测结果；在证据缺失时不得填写 TTFT、latency、throughput、memory、temperature、speedup 或 30-request stability 数字。
+
+只读清点结束后，Jetson 已正常执行 shutdown，SSH 连接关闭，并由用户确认物理断电。完整边界、证据表和冲突处理见 [Day 14 KV Cache 实现、v2 修订与证据恢复报告](reports/day-14-kv-cache-report.md)。
+
 ## 数据管线能力
 
 `scripts/build_fineweb_edu_corpus.py` 已实现：
@@ -721,11 +803,12 @@ python scripts/run_generation_suite.py `
 - `configs/data_fineweb_edu.yaml`：FineWeb-Edu 采集、清洗、划分和分片配置；
 - `configs/tokenizer.yaml`：ByteLevel BPE 训练、产物和评估配置；
 - `configs/tokenized_data.yaml`：冻结 Pilot 的 tokenized binary、索引、发布恢复和 Dataset 契约；
-- `configs/tokenized_data_full.yaml`：与 Full source manifest 身份绑定的正式编码配置。
+- `configs/tokenized_data_full.yaml`：与 Full source manifest 身份绑定的正式编码配置；
 - `configs/day11_generation_protocol.json`：Day 11/12 共用的固定 prompts、seed、64-token 上限和五种解码角色；
 - `configs/ablation_dropout_01.yaml`：Day 12 Treatment 配置，相对 Baseline 只把 `model.dropout` 从 `0.0` 改为 `0.1`；
-- `configs/day12_ablation_contract.json`：冻结单变量、held constants、训练预算、评估协议和统计边界。
-- `configs/day13_jetson_deployment_protocol.json`：冻结 Jetson artifact/runtime 身份、FP32/FP16 smoke、benchmark、stability 和安全边界。
+- `configs/day12_ablation_contract.json`：冻结单变量、held constants、训练预算、评估协议和统计边界；
+- `configs/day13_jetson_deployment_protocol.json`：冻结 Jetson artifact/runtime 身份、FP32/FP16 smoke、benchmark、stability 和安全边界；
+- `configs/day14_kv_cache_protocol.json`：冻结 Day 14 KV Cache v2 API、cache/context、correctness、paired benchmark、stability、evidence 与安全契约。
 
 ## 本地验证
 
@@ -736,6 +819,21 @@ python .\scripts\check_env.py
 python .\scripts\check_config.py
 python -m pytest -q
 ```
+
+### Day 14 恢复记录（本次未重跑）
+
+旧会话冻结记录报告：Windows Code Integrity 曾阻止 `pyarrow\arrow_compute.dll`，随后将 PyArrow `25.0.0` 修复为 `23.0.1`，`datasets==5.0.1` 与 `torch==2.11.0+cu128` 未改变，并报告 `3 / 110 / 822 passed`。本次接续没有恢复这些命令的完整原始 stdout，因此这些数字按“旧会话报告”记录，不冒充本轮重新执行结果。
+
+本次文档恢复明确执行：
+
+```text
+TestsRerun=False
+PythonExecuted=False
+BenchmarkRerun=False
+StabilityRerun=False
+JetsonF1RuntimeAcceptance=UNKNOWN
+```
+
 
 Day 13 功能提交 `4c946adf` 的本地完整测试结果：
 
@@ -811,7 +909,8 @@ Day 10 没有修改训练源码或冻结配置；正式 run 使用 `07c22a4`。�
 - greedy/sample、temperature、top-k、top-p、独立 RNG、EOS 与 context crop；
 - generation protocol schema/fingerprint、单次 artifact load、ordered JSONL 与失败不发布。
 - Day 12 ablation contract 唯一差异、held constants、参数量、token budget、generation protocol 和错误拒绝路径。
-- Day 13 Jetson deployment protocol、dry-run/load-only、strict artifact identity、FP32/FP16 smoke、benchmark/stability 输出与禁止训练路径。
+- Day 13 Jetson deployment protocol、dry-run/load-only、strict artifact identity、FP32/FP16 smoke、benchmark/stability 输出与禁止训练路径；
+- Day 14 KV Cache API/cache/context contract、reference/cached correctness、paired benchmark、stability、evidence validator、分支身份与 fail-closed 安全边界。
 
 ## 项目结构
 
@@ -824,6 +923,7 @@ small-gpt/
 │   ├── day11_generation_protocol.json
 │   ├── day12_ablation_contract.json
 │   ├── day13_jetson_deployment_protocol.json
+│   ├── day14_kv_cache_protocol.json
 │   ├── debug.yaml
 │   ├── tokenizer.yaml
 │   ├── tokenized_data.yaml
@@ -868,13 +968,16 @@ small-gpt/
 │   ├── day-10-pretraining-report.md
 │   ├── day-11-evaluation-generation-report.md
 │   ├── day-12-dropout-ablation-report.md
-│   └── day-13-jetson-deployment-report.md
+│   ├── day-13-jetson-deployment-report.md
+│   └── day-14-kv-cache-report.md
 ├── scripts/
+│   ├── benchmark_day14_kv_cache.py
 │   ├── benchmark_jetson_inference.py
 │   ├── build_fineweb_edu_corpus.py
 │   ├── check_checkpoint_resume.py
 │   ├── check_ablation_contract.py
 │   ├── check_config.py
+│   ├── check_day14_kv_cache.py
 │   ├── check_env.py
 │   ├── check_jetson_deployment.py
 │   ├── check_training_config.py
@@ -900,6 +1003,7 @@ small-gpt/
 │   ├── test_checkpoint.py
 │   ├── test_config.py
 │   ├── test_day13_jetson_deployment.py
+│   ├── test_day14_kv_cache.py
 │   ├── test_data_config.py
 │   ├── test_data_pipeline.py
 │   ├── test_data_stream.py
@@ -969,6 +1073,7 @@ small-gpt/
 - [x] Day 11：完成 strict checkpoint 推理加载、完整 frozen validation/test 与固定生成协议
 - [x] Day 12：完成 Dropout 0.1 单变量训练、完整评估、生成对比与证据归档；保留 Control
 - [x] Day 13：在 Jetson Orin Nano Super 8GB 完成 Control 的 FP32/FP16 推理、benchmark、稳定性与 evidence 独立复核
+- [ ] Day 14：KV Cache v2 功能与 F0D 隔离部署已完成；F1 runtime acceptance 证据为 `UNKNOWN`，尚未闭环
 - [x] 完成至少一个消融实验
 
 ## 文档
@@ -995,11 +1100,12 @@ small-gpt/
 - [Day 11 Frozen Evaluation 与文本生成执行报告](reports/day-11-evaluation-generation-report.md)
 - [Day 12 Dropout 0.1 单变量消融执行报告](reports/day-12-dropout-ablation-report.md)
 - [Day 13 Jetson Orin Nano Super 推理部署执行报告](reports/day-13-jetson-deployment-report.md)
+- [Day 14 KV Cache 实现、v2 修订与证据恢复报告](reports/day-14-kv-cache-report.md)
 
 ## 当前阶段
 
-Day 13 已把保留的 `dropout=0.0` Control 部署到 NVIDIA Jetson Orin Nano Super 8GB。原生 PyTorch CUDA runtime 完成 strict model-only load，FP32/FP16 smoke、同设备 benchmark 与 FP16 10-request stability 均通过；没有训练、checkpoint 写入、功耗模式变更或 `jetson_clocks`。
+Day 14 已完成 KV Cache inference-only 功能、v2 数值决策协议、分支契约修复和 v2-r1 F0D 隔离部署。GitHub `main` 与 `day14-kv-cache-v2` 已共同指向 `774cf358be9822cdeb6a5921bc9068c1312bc192`，因此功能代码和 Git 同步状态为 PASS。
 
-当前 full-prefix-recompute 实现的冻结 benchmark 为 FP32 `78.815526` end-to-end tok/s、FP16 `83.746914` tok/s。FP16 在本次同设备 run 中 mean end-to-end 快 `6.257%`、CUDA peak allocated 低 `46.921%`，但 model load 和 TTFT 没有同步改善。这些数字只描述当前设备与协议，不是跨设备或通用性能承诺。
+当前最后一个有直接证据的运行门禁是 `Day14V2StageF0DJetsonIsolatedDeployment=PASS`。Jetson 只读清点发现 F0D 三份 evidence，但预期的 `evidence/day14-v2` 目录不存在，也没有 v2 correctness、paired benchmark、30-request stability、tegrastats 或最终 manifest。因此 `Day14F1RuntimeAcceptance=UNKNOWN`，不能报告 KV Cache speedup、TTFT、latency、throughput、memory 或 temperature 数字，也不能把 Day 14 标为 100% 完成。
 
-Evidence archive 已传回 Windows 并通过外层 SHA、CRC、内部 hash、JSON/JSONL、路径安全和身份语义独立复核。当前仍没有 KV Cache、TensorRT、INT8、并发服务或可靠机器人控制接口；三个 greedy smoke 输出仍明显重复。下一阶段应优先将 KV Cache 作为新的单变量部署优化，并用独立协议重新测量。
+本次恢复没有运行 Python、测试、benchmark 或 stability，没有访问 checkpoint 内容，没有修改 Jetson；清点后 Jetson 已安全关机并由用户确认物理断电。当前文档只做事实收口，本地尚未 commit 或 push。

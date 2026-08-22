@@ -3808,3 +3808,84 @@ Day13Status=COMPLETE
 Control checkpoint 已在 Jetson Orin Nano Super 8GB 上完成真实 FP32/FP16 CUDA 推理、同设备 benchmark 与十请求稳定性。当前实现的优势是 artifact、runtime、source 和 evidence 身份可审计；局限是 full-prefix recompute、无 KV Cache/TensorRT/INT8，以及 base LM 的明显重复与弱 instruction following。
 
 Day 14 应优先把 KV Cache 作为新的单变量部署优化，重新冻结 protocol、输出目录和测量方法。若继续 TensorRT、量化、功耗模式或机器人集成，必须分别建立新授权与安全边界，不能覆盖 Day 13 evidence。
+
+## 2026-08-22：Day 14 KV Cache v2 恢复与文档记录
+
+### 接续冻结状态
+
+Day 14 v1 功能提交为 `74ff2619a6b20bb243d3e67c3bbb6a79a4cd54e3`；v2 correctness-contract 提交为 `c3076da038814f0d3da25d2030eb8201643c6e67`；分支契约修复提交为 `774cf358be9822cdeb6a5921bc9068c1312bc192`，主题为 `fix: align KV-cache v2 runtime branch contract`。
+
+修复将 `source.required_branch` 从错误的 `main` 改为 `day14-kv-cache-v2`，并把新部署命名空间改为 `/home/jetson/small-gpt-day14-v2-r1`。直接修复路径为 protocol、checker 和 tests 三个文件；Day 14 当前功能文件总集还包括 benchmark 脚本。v1 与旧 v2 保留，没有 amend、force push 或 tag。
+
+### GitHub main 恢复
+
+经过 clean-worktree、三方 SHA 和 ancestor gate，Windows 本地将 `main` 从 `74ff2619` fast-forward 到 `774cf358` 并普通 push。最终证据：
+
+```text
+LocalMain=774cf358be9822cdeb6a5921bc9068c1312bc192
+TrackingMain=774cf358be9822cdeb6a5921bc9068c1312bc192
+RemoteMain=774cf358be9822cdeb6a5921bc9068c1312bc192
+RemoteFeature=774cf358be9822cdeb6a5921bc9068c1312bc192
+Day14MainFastForwardPush=PASS
+```
+
+### 测试记录的证据边界
+
+旧会话冻结记录报告 PyArrow 从 `25.0.0` 修复到 `23.0.1`，`datasets==5.0.1` 和 `torch==2.11.0+cu128` 不变，并报告 `3 / 110 / 822 passed`。本次接续没有取得这些命令的完整原始 stdout，也没有重新运行测试，因此保留其“旧会话报告”限定，不升级为本轮新证据。
+
+### F0D 隔离部署证据
+
+v2-r1 部署根 `/home/jetson/small-gpt-day14-v2-r1` 存在。只读清点确认以下三个文件：
+
+```text
+small-gpt-day14-v2-r1-transfer-manifest-774cf358.json
+stage-f0d-isolation-inventory.json
+stage-f0d-pip-freeze.txt
+```
+
+结合既有 gate 输出，最后一个有证据的 PASS 为：
+
+```text
+Day14V2StageF0DJetsonIsolatedDeployment=PASS
+```
+
+### F1 只读恢复
+
+用户仅授权重新上电并执行 F1 只读证据清单。Windows 通过专用有线 SSH 连接 Jetson；没有运行 Python、correctness、benchmark 或 stability，没有修改/删除远端文件，没有读取、复制或链接 checkpoint。
+
+实际清单输出：
+
+```text
+Directory=/home/jetson/small-gpt-day14-v2-r1|Exists=True
+Directory=/home/jetson/small-gpt-day14-v2-r1/evidence|Exists=True
+Directory=/home/jetson/small-gpt-day14-v2-r1/evidence/day14-v2|Exists=False
+EvidenceFileCount=3
+Day14F1RemoteEvidenceInventoryExit=0
+```
+
+三个文件均属于 F0D，没有 F1 correctness、benchmark、stability 或 final acceptance evidence。因此：
+
+```text
+Day14FunctionalCodeAndGit=PASS
+Day14V2StageF0DJetsonIsolatedDeployment=PASS
+Day14F1EvidenceClosure=FAIL
+Day14F1RuntimeAcceptance=UNKNOWN
+Day14OverallStatus=INCOMPLETE
+```
+
+`F1EvidenceClosure=FAIL` 只表示缺少证据闭环，不能推导为 runtime 执行失败。任何协议阈值都不能当作实测值。
+
+### Jetson 关闭状态
+
+清点结束后，用户授权且实际执行安全关机。SSH 显示连接关闭，等待后由用户确认物理电源已断开：
+
+```text
+JetsonShutdownCommand=PASS
+SSHConnectionClosed=True
+JetsonPhysicalPower=Disconnected
+JetsonCurrentState=SAFE_POWERED_OFF
+```
+
+### 文档变更边界
+
+本次只允许修改 `README.md`、`reports/daily-log.md`，并新增 `reports/day-14-kv-cache-report.md`。没有运行测试，没有连接已断电的 Jetson，没有 commit 或 push。Day 14 文档必须持续显示 F1 为 `UNKNOWN`，直到取得新的、明确授权且可审计的运行证据。
