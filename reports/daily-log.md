@@ -3888,4 +3888,18 @@ JetsonCurrentState=SAFE_POWERED_OFF
 
 ### 文档变更边界
 
-本次只允许修改 `README.md`、`reports/daily-log.md`，并新增 `reports/day-14-kv-cache-report.md`。没有运行测试，没有连接已断电的 Jetson，没有 commit 或 push。Day 14 文档必须持续显示 F1 为 `UNKNOWN`，直到取得新的、明确授权且可审计的运行证据。
+文档内容写入阶段只允许修改 `README.md`、`reports/daily-log.md`，并新增 `reports/day-14-kv-cache-report.md`；该阶段没有运行测试、没有连接已断电的 Jetson，也没有 commit 或 push。
+
+随后用户单独授权精确暂存上述三个文档，创建首个 Day 14 文档提交并普通 push：
+
+```text
+Day14FunctionalHead=774cf358be9822cdeb6a5921bc9068c1312bc192
+Day14DocumentationFirstCommit=bd760a526df713c22fa6c2d3ec3a0a1f0eecec1b
+Day14DocumentationFirstPush=PASS
+ForcePushUsed=False
+AmendUsed=False
+TagCreated=False
+PreservedUntrackedHandoff=True
+```
+
+首个文档版本仍保留了写入阶段的“未 commit/push”表述，因此后续使用新的纯文档提交修正状态，不 amend，也不在文档中硬编码会因本次提交而再次变化的实时 `main` SHA。Day 14 文档继续显示 F1 为 `UNKNOWN`，直到取得新的、明确授权且可审计的运行证据。

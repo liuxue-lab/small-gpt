@@ -17,11 +17,12 @@
 | Day 14 v2 repair head | `774cf358be9822cdeb6a5921bc9068c1312bc192` |
 | Repair subject | `fix: align KV-cache v2 runtime branch contract` |
 | Feature branch | `day14-kv-cache-v2` |
-| Current main | `774cf358be9822cdeb6a5921bc9068c1312bc192` |
+| Day 14 functional head | `774cf358be9822cdeb6a5921bc9068c1312bc192` |
+| First Day 14 documentation commit | `bd760a526df713c22fa6c2d3ec3a0a1f0eecec1b` |
 | Protocol | `day14-kv-cache-v2` / schema v2 |
 | Required runtime branch | `day14-kv-cache-v2` |
 
-main、feature tracking 和远端在 fast-forward/push 后均为 `774cf358`。该同步使用普通 push，没有 force push、amend 或 tag。
+功能代码、feature tracking 和 feature 远端在功能同步门禁后均为 `774cf358`。`main` 先 fast-forward 到该功能 head，随后增加首个文档提交 `bd760a5` 及纯文档修正提交。功能 head 与文档提交历史分开记录；实时 `main` SHA 以 Git 历史为准。所有同步均使用普通 push，没有 force push、amend 或 tag。
 
 ## 3. 功能实现范围
 
@@ -185,7 +186,7 @@ Day14F1RemoteEvidenceInventoryExit=0
 
 | 项目 | 期望状态 | 当前证据 | 判定 |
 | --- | --- | --- | --- |
-| Day 14 功能代码 | 冻结并同步 | main/feature/remote=`774cf358` | PASS |
+| Day 14 功能代码 | 冻结并同步 | 功能 head 与 feature=`774cf358`；`main` 包含首个文档提交 `bd760a5` 及后续纯文档修正 | PASS |
 | v1/v2 保留 | 不覆盖、不改写历史 | v1、v2、v2-r1 namespace 均保留 | PASS |
 | F0D 隔离部署 | package/runtime/evidence 身份成立 | 三份 F0D evidence，既有 gate PASS | PASS |
 | F1 evidence directory | `evidence/day14-v2` 存在 | 目录不存在 | FAIL |
@@ -237,12 +238,17 @@ reports/daily-log.md
 reports/day-14-kv-cache-report.md
 ```
 
-没有执行测试，没有再次连接 Jetson，没有 commit 或 push。本报告创建后，本地工作树应仅包含上述三个文档路径。
+文档内容写入阶段没有执行测试、没有再次连接 Jetson，也没有 commit 或 push。随后用户单独授权精确暂存上述三个路径，创建首个文档提交 `bd760a526df713c22fa6c2d3ec3a0a1f0eecec1b` 并普通 push；未跟踪交接文档保持未跟踪且 SHA-256 不变。
+
+首个文档版本中的写入前状态由后续新的纯文档提交修正，不 amend。为避免自引用，报告保留稳定的功能 head 和首个文档提交身份，不硬编码本次修正后的实时 `main` SHA。
 
 ```text
+Day14FunctionalHead=774cf358be9822cdeb6a5921bc9068c1312bc192
 Day14DocumentationLocalDraft=PASS
-Day14DocumentationCommit=NOT_CREATED
-Day14DocumentationPush=NOT_PERFORMED
+Day14DocumentationFirstCommit=bd760a526df713c22fa6c2d3ec3a0a1f0eecec1b
+Day14DocumentationFirstPush=PASS
+Day14DocumentationStatusCorrection=RECORDED_BY_THIS_COMMIT
+PreservedUntrackedHandoff=True
 Day14F1RuntimeAcceptance=UNKNOWN
 Day14OverallStatus=INCOMPLETE
 ```

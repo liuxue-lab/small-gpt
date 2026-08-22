@@ -45,10 +45,10 @@
 | Day 13 stability | FP16 10/10 串行请求、640 tokens；未观察到 allocator 单调无界增长；最高 46.781°C |
 | Day 13 evidence | 43,975-byte ZIP，SHA-256 `19e0e42454eb5a9e8329a014e112a4347dcaefc1ba7ab6005b9aad71c5357d0e`，Windows 独立复核通过 |
 | Day 14 KV Cache | 独立 inference-only cached API；保留原始 `forward` 与训练路径；不把 cache 写入 checkpoint |
-| Day 14 Git | v1 `74ff2619`、v2 `c3076da0`、分支契约修复 `774cf358`；main、feature tracking 与远端均已对齐 `774cf358` |
+| Day 14 Git | v1 `74ff2619`、v2 `c3076da0`、功能 head `774cf358`；`day14-kv-cache-v2` 保持该功能 head，`main` 在其上包含首个文档提交 `bd760a5` 及后续纯文档修正 |
 | Day 14 F0D | v2-r1 隔离部署及三份 F0D evidence 已确认，最后一个有证据的门禁为 `PASS` |
 | Day 14 F1 | 预期 evidence 目录不存在，未发现 v2 correctness、benchmark、stability 或最终 acceptance 输出；状态为 `UNKNOWN` |
-| Git 分支 | `main`，HEAD `774cf358be9822cdeb6a5921bc9068c1312bc192` |
+| Git 分支 | `main`（包含 Day 14 文档提交）；`day14-kv-cache-v2` 的功能 head 为 `774cf358be9822cdeb6a5921bc9068c1312bc192` |
 
 > FineWeb-Edu 的 `provided_token_count` 使用上游 Tokenizer 口径，只用于语料采集预算。当前项目 BPE 在全 Pilot 上产生 2,129,776 个模型 token，比 2,000,083 个 provided tokens 高约 6.48%。后续训练预算以项目 Tokenizer 的实际 token 数为准。
 
@@ -519,7 +519,7 @@ Day 14 在保留 Day 13 Control checkpoint 和原始训练路径的前提下，�
 | v2 分支契约修复 | `774cf358be9822cdeb6a5921bc9068c1312bc192`，`fix: align KV-cache v2 runtime branch contract` |
 | 冻结协议 | `configs/day14_kv_cache_protocol.json`，`protocol_id=day14-kv-cache-v2` |
 | 要求分支 | `day14-kv-cache-v2`；原错误值 `main` 已在 `774cf358` 修正 |
-| GitHub 状态 | `main` 与 `day14-kv-cache-v2` 均指向 `774cf358` |
+| GitHub 状态 | Day 14 功能 head 为 `774cf358`；feature 保持该功能 head；`main` 已包含首个文档提交 `bd760a5` 及后续纯文档修正，实时 head 以 Git 历史为准 |
 
 `774cf358` 直接修改 protocol、checker 和 tests 三个文件；从旧 main `74ff2619` fast-forward 到该提交时，累计包含 Day 14 的 protocol、benchmark、checker 和 tests 四个功能文件。该过程没有 amend、force push 或 tag。
 
@@ -1104,8 +1104,8 @@ small-gpt/
 
 ## 当前阶段
 
-Day 14 已完成 KV Cache inference-only 功能、v2 数值决策协议、分支契约修复和 v2-r1 F0D 隔离部署。GitHub `main` 与 `day14-kv-cache-v2` 已共同指向 `774cf358be9822cdeb6a5921bc9068c1312bc192`，因此功能代码和 Git 同步状态为 PASS。
+Day 14 已完成 KV Cache inference-only 功能、v2 数值决策协议、分支契约修复和 v2-r1 F0D 隔离部署。Day 14 功能代码冻结于 `774cf358be9822cdeb6a5921bc9068c1312bc192`，`day14-kv-cache-v2` 保持该功能 head；`main` 在其上包含首个文档提交 `bd760a526df713c22fa6c2d3ec3a0a1f0eecec1b` 及后续纯文档修正。纯文档提交不改变功能代码身份，实时 `main` head 以 Git 历史为准。
 
 当前最后一个有直接证据的运行门禁是 `Day14V2StageF0DJetsonIsolatedDeployment=PASS`。Jetson 只读清点发现 F0D 三份 evidence，但预期的 `evidence/day14-v2` 目录不存在，也没有 v2 correctness、paired benchmark、30-request stability、tegrastats 或最终 manifest。因此 `Day14F1RuntimeAcceptance=UNKNOWN`，不能报告 KV Cache speedup、TTFT、latency、throughput、memory 或 temperature 数字，也不能把 Day 14 标为 100% 完成。
 
-本次恢复没有运行 Python、测试、benchmark 或 stability，没有访问 checkpoint 内容，没有修改 Jetson；清点后 Jetson 已安全关机并由用户确认物理断电。当前文档只做事实收口，本地尚未 commit 或 push。
+本次恢复没有运行 Python、测试、benchmark 或 stability，没有访问 checkpoint 内容，没有修改 Jetson；清点后 Jetson 已安全关机并由用户确认物理断电。文档已经通过普通提交和普通 push 进入 `main`；首个 Day 14 文档提交为 `bd760a526df713c22fa6c2d3ec3a0a1f0eecec1b`，后续状态修正仅使用新的纯文档提交，不 amend。
